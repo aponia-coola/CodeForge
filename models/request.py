@@ -1,51 +1,20 @@
-import requests
+# Please install OpenAI SDK first: `pip3 install openai`
 import os
+from openai import OpenAI
 
+client = OpenAI(
+    api_key=os.environ.get('DEEPSEEK_API_KEY'),
+    base_url="https://api.deepseek.com")
 
-def call_deepseek_api(messages, api_key=None):
-    """
-    调用 DeepSeek API
-    
-    Args:
-        messages: 消息列表，格式为 [{"role": "user/system", "content": "..."}]
-        api_key: DeepSeek API 密钥，如果为 None 则从环境变量 DEEPSEEK_API_KEY 读取
-    
-    Returns:
-        API 响应数据（字典）
-    """
-    if api_key is None:
-        api_key = os.getenv("DEEPSEEK_API_KEY")
-    
-    if not api_key:
-        raise ValueError("DEEPSEEK_API_KEY 未设置")
-    
-    url = "https://api.deepseek.com/chat/completions"
-    
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-    
-    data = {
-        "model": "deepseek-v4-pro",
-        "messages": messages,
-        "thinking": {"type": "enabled"},
-        "reasoning_effort": "high",
-        "stream": False
-    }
-    
-    response = requests.post(url, headers=headers, json=data)
-    response.raise_for_status()
-    
-    return response.json()
+response = client.chat.completions.create(
+    model="deepseek-v4-flash",
+    messages=[
+        {"role": "system", "content": "You are a helpful assistant"},
+        {"role": "user", "content": "Hello"},
+    ],
+    stream=False,
+    reasoning_effort="high",
+    extra_body={"thinking": {"type": "enabled"}}
+)
 
-
-# 使用示例
-if __name__ == "__main__":
-    messages = [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Hello!"}
-    ]
-    
-    result = call_deepseek_api(messages)
-    print(result)
+print(response.choices[0].message.content)
