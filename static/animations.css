@@ -1,0 +1,70 @@
+/* ============================================================
+   AI Agent Web Compiler — animations.css
+   关键帧动画 + 过渡工具类
+   ============================================================ */
+
+/* 终端光标闪烁 */
+@keyframes blink {
+  0%, 50%   { opacity: 1; }
+  50.01%, 100% { opacity: 0; }
+}
+
+/* AI 消息滑入 */
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 模型状态点呼吸 */
+@keyframes pulse-dot {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 4px var(--c-green);
+  }
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 8px var(--c-green);
+  }
+}
+
+/* AI 星标柔和脉冲 */
+@keyframes pulse-soft {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.65; }
+}
+
+/* 中间图标悬浮 */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-6px); }
+}
+
+/* 入场(整页淡入) */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* 下拉菜单展开 */
+@keyframes slide-down {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+body { animation: fade-in 0.4s ease-out both; }
+
+/* ===== 工具类 ===== */
+.fade-in   { animation: fade-in var(--t-med) ease-out both; }
+.slide-in  { animation: slide-in 0.35s cubic-bezier(.4,0,.2,1) both; }

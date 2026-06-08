@@ -1,5 +1,9 @@
 {
-  "0": "deepseek-v4-flash",
-  "1": "deepseek-v4-pro",
-  "2":"glm-4.7flash"
+  "current_model": "deepseek-v4-flash",
+  "base_url": "https://api.deepseek.com",
+  "models": [
+    {"id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash"},
+    {"id": "deepseek-v4-pro",   "name": "DeepSeek V4 Pro"},
+    {"id": "glm-4.7flash",      "name": "GLM 4.7 Flash"}
+  ]
 }
