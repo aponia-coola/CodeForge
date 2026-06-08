@@ -45,7 +45,7 @@ def read(path, start_line=None):
         end_line == position 时为纯插入(不替换任何行)
     """
 def append(file_path, content, mode='append', position=None, end_line=None, chunk_size=4096):
-    
+
     if mode == 'append':
         with open(file_path, 'a', encoding='utf-8') as file:
             for i in range(0, len(content), chunk_size):
@@ -63,5 +63,48 @@ def append(file_path, content, mode='append', position=None, end_line=None, chun
             file.writelines(lines)
     else:
         raise ValueError(f"不支持的 mode: {mode},可选 'append' 或 'edit'")
+
+
+def list_tree(path, show_hidden=False):
+    """
+    列出指定目录下的一级内容,分文件夹与文件两类返回。
+    供前端资源管理器渲染文件树使用。
+
+    Args:
+        path: 目录绝对路径
+        show_hidden: 是否包含以 "." 开头的隐藏项,默认 False
+
+    Returns:
+        dict,结构如下:
+        {
+            "path": "<绝对路径>",
+            "folders": [{"name": "...", "path": "..."}, ...],
+            "files":   [{"name": "...", "path": "...", "size": <int>}, ...]
+        }
+        各类内部按名称升序排序;路径不存在或不是目录时抛 FileNotFoundError / NotADirectoryError。
+    """
+    abs_path = os.path.abspath(path)
+    if not os.path.exists(abs_path):
+        raise FileNotFoundError(f"路径不存在: {abs_path}")
+    if not os.path.isdir(abs_path):
+        raise NotADirectoryError(f"不是目录: {abs_path}")
+
+    folders, files = [], []
+    for name in os.listdir(abs_path):
+        if not show_hidden and name.startswith('.'):
+            continue
+        full = os.path.join(abs_path, name)
+        if os.path.isdir(full):
+            folders.append({"name": name, "path": full})
+        elif os.path.isfile(full):
+            try:
+                size = os.path.getsize(full)
+            except OSError:
+                size = 0
+            files.append({"name": name, "path": full, "size": size})
+
+    folders.sort(key=lambda x: x["name"].lower())
+    files.sort(key=lambda x: x["name"].lower())
+    return {"path": abs_path, "folders": folders, "files": files}
 
 

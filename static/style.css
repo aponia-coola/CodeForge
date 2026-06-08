@@ -172,6 +172,7 @@ body {
   overflow: hidden;
   overflow-y: auto;
   flex-shrink: 0;
+  position: relative;            /* 为底栏绝对定位提供锚点 */
   transition: width 0.2s var(--t-med), border-color 0.2s var(--t-med);
 }
 .sidebar.collapsed {
@@ -205,6 +206,7 @@ body {
   transition: background var(--t-fast);
 }
 .sidebar-header span:last-child > span:hover { background: var(--bg-hover); }
+.sidebar-header span:last-child > span[data-action] { cursor: pointer; }
 .sidebar-header span:last-child > span svg { display: block; }
 
 .explorer { padding-bottom: 8px; }
@@ -751,4 +753,191 @@ body {
 .empty-btn:active {
   transform: translateY(0) scale(0.97);
   background: rgba(139, 92, 246, 0.24);
+}
+
+/* ===== 资源管理器:已打开文件夹的路径条 & 列表 ===== */
+.explorer-path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 4px;
+  cursor: pointer;            /* 点击整条 path-bar = 重新进入输入模式 */
+  transition: color var(--t-fast);
+}
+.explorer-path:hover { color: var(--text); }
+.explorer-path:hover .explorer-path-text { color: var(--c-purple-soft); }
+.explorer-path-up {
+  width: 18px; height: 18px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-muted);
+  transition: all var(--t-fast);
+  flex-shrink: 0;
+}
+.explorer-path-up:hover { background: var(--bg-hover); color: var(--text-strong); }
+.explorer-path-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: "SF Mono", Consolas, "Courier New", monospace;
+  direction: rtl;
+  text-align: left;
+}
+
+.explorer-list { padding: 0 0 4px; }
+.explorer-list-indent { padding-left: 12px; border-left: 1px dashed var(--border-soft); margin-left: 16px; }
+.explorer-list-empty {
+  padding: 6px 16px;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.folder-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ===== 文件夹行:做成"打开"按钮 ===== */
+/* 覆盖 .folder 原有样式 —— 移除 ::before 三角,改为内置图标 + 箭头 */
+.folder.folder-row {
+  padding: 4px 8px 4px 8px;
+  margin: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  color: var(--text);
+  gap: 6px;
+  transition: background var(--t-fast), border-color var(--t-fast), color var(--t-fast);
+  outline: none;
+  user-select: none;
+}
+.folder.folder-row::before { content: none; }
+.folder.folder-row:hover {
+  background: var(--bg-hover);
+  border-color: var(--border);
+  color: var(--text-strong);
+}
+.folder.folder-row:focus-visible {
+  border-color: var(--c-purple);
+  box-shadow: 0 0 0 2px rgba(139, 92, 246, .25);
+}
+.folder.folder-row:active {
+  background: var(--bg-active);
+  transform: translateY(0.5px);
+}
+.folder.folder-row.expanded {
+  background: rgba(139, 92, 246, 0.10);
+  border-color: rgba(139, 92, 246, 0.32);
+  color: var(--c-purple-soft);
+}
+.folder.folder-row.expanded .folder-row-icon { color: var(--c-purple-soft); }
+.folder.folder-row.expanded .folder-row-chevron { transform: rotate(180deg); }
+.folder.folder-row.loading { opacity: 0.65; pointer-events: none; }
+.folder.folder-row.loading .folder-row-chevron {
+  animation: spin 0.9s linear infinite;
+}
+
+.folder-row-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--c-yellow);
+  flex-shrink: 0;
+  transition: color var(--t-fast);
+}
+.folder-row-icon svg { display: block; }
+.folder.folder-row:hover .folder-row-icon { color: var(--c-orange); }
+
+.folder-row-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  flex-shrink: 0;
+  transition: transform var(--t-fast), color var(--t-fast);
+}
+.folder-row-chevron svg { display: block; }
+.folder.folder-row:hover .folder-row-chevron { color: var(--text); }
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ===== 顶栏"打开"触发的内联路径输入框 ===== */
+.explorer-path-input {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 6px 12px 4px;
+  padding: 6px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--c-purple);
+  border-radius: 5px;
+  color: var(--text-strong);
+  font-size: 12px;
+  font-family: "SF Mono", Consolas, "Courier New", monospace;
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, .15);
+  box-sizing: border-box;
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.explorer-path-input:focus {
+  border-color: var(--c-purple-soft);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, .30);
+}
+.explorer-path-input::placeholder { color: var(--text-dim); }
+
+/* ===== 资源管理器底部"确定"按钮 =====
+   只在 showOpenFolderInput() 期间出现,浮在 .sidebar 的居中下方
+   pointer-events:none 让空白区不挡 explorer 滚动,只有按钮可点 */
+.sidebar-confirm-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  padding: 14px 12px 12px;
+  background: linear-gradient(180deg, transparent 0%, var(--bg-panel) 55%);
+  pointer-events: none;
+  z-index: 10;
+  animation: sidebar-confirm-slide-up 0.18s cubic-bezier(.4, 0, .2, 1) both;
+}
+@keyframes sidebar-confirm-slide-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.sidebar-confirm-btn {
+  pointer-events: auto;
+  background: var(--c-purple);
+  color: #fff;
+  border: none;
+  padding: 6px 26px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 2px;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(139, 92, 246, .4);
+  transition: background var(--t-fast), transform var(--t-fast), box-shadow var(--t-fast);
+}
+.sidebar-confirm-btn:hover {
+  background: var(--c-purple-soft);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(139, 92, 246, .55);
+}
+.sidebar-confirm-btn:active { transform: translateY(0); }
+.sidebar-confirm-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, .35), 0 2px 10px rgba(139, 92, 246, .4);
 }
