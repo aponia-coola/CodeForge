@@ -2,7 +2,7 @@ import os
 
 from flask import Flask, jsonify, request as flask_request
 
-from agent.explor.file import list_dir
+from explorer.file import list_dir
 from models.request import (
     get_models,
     get_current_model,

@@ -10,7 +10,7 @@ import os
 from typing import Callable
 
 from agent import state
-from agent.explor import file
+from explorer import file
 
 
 # ──────────────── 注册表 ────────────────
