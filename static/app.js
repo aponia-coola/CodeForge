@@ -212,6 +212,11 @@
     const pathText = explorer.querySelector('.explorer-path-text');
     const basePath = currentRoot || (pathText ? pathText.textContent : '') || '';
 
+    // 把"输入框 + 确定按钮"合并到一行,作为 explorer 的固定头部
+    // (position: sticky 浮在文件列表上方,列表滚动时不会跟着滚)
+    const inputRow = document.createElement('div');
+    inputRow.className = 'explorer-input-row';
+
     const input = document.createElement('input');
     input.type = 'text';
     input.className = 'explorer-path-input';
@@ -220,14 +225,13 @@
     input.autocomplete = 'off';
     if (basePath) input.value = basePath;
 
-    // 底栏"确定"按钮 —— 与 Enter 等价
-    const confirmBar = document.createElement('div');
-    confirmBar.className = 'sidebar-confirm-bar';
     const confirmBtn = document.createElement('button');
     confirmBtn.type = 'button';
     confirmBtn.className = 'sidebar-confirm-btn';
     confirmBtn.textContent = '确定';
-    confirmBar.appendChild(confirmBtn);
+
+    inputRow.appendChild(input);
+    inputRow.appendChild(confirmBtn);
 
     // 同步 path 条文本(初次 / 手动输入)
     const syncPathBar = (p) => {
@@ -238,13 +242,12 @@
     const cleanup = () => {
       // 取消时把 path 条还原回当前根(可能已被点击 folder 改写过)
       if (pathText) pathText.textContent = currentRoot || basePath || '/';
-      input.remove();
-      confirmBar.remove();
+      inputRow.remove();
     };
     const submit = () => {
       const path = input.value.trim();
       if (path) {
-        cleanup();              // 先把输入框和底栏拆掉,再切根
+        cleanup();              // 先把输入行拆掉,再切根
         openFolder(path);
       } else {
         cleanup();
@@ -258,7 +261,7 @@
     // 手动输入时也实时同步
     input.addEventListener('input', () => syncPathBar(input.value.trim()));
     // 点击外部自动关闭 —— 用 relatedTarget 精确判定焦点去向:
-    //   - 焦点去了 确认按钮 / 文件夹行 / 路径条 / 内部文件 → 保留 input 模式(让用户继续浏览/选中)
+    //   - 焦点去了 输入行内任意元素(输入框/确定按钮) / 文件夹行 / 路径条 / 内部文件 → 保留 input 模式
     //   - 焦点跑到 sidebar / explorer 之外 → 关闭
     //   - relatedTarget 为 null(点了 body/不可聚焦元素)→ 关闭
     input.addEventListener('blur', e => {
@@ -266,10 +269,10 @@
       if (next && (
           next === input ||
           next === confirmBtn ||
+          next.closest('.explorer-input-row') ||
           next.closest('.folder.folder-row') ||
           next.closest('.explorer-path') ||
-          next.closest('.file') ||
-          next.closest('.sidebar-confirm-bar')
+          next.closest('.file')
       )) {
         return;     // 焦点在"input 模式关联元素"内,不关闭
       }
@@ -280,9 +283,8 @@
       submit();
     });
 
-    // 输入框插到 explorer 顶部,底栏浮在 sidebar 居中下方
-    explorer.insertBefore(input, explorer.firstChild);
-    sidebar.appendChild(confirmBar);
+    // 整行插到 explorer 顶部 → 浮在文件列表之上,不会被列表滚走
+    explorer.insertBefore(inputRow, explorer.firstChild);
     input.focus();
     input.select();
   }

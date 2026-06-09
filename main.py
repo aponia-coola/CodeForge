@@ -2,7 +2,7 @@ import os
 
 from flask import Flask, jsonify, request as flask_request
 
-from agent.file import list_tree
+from agent.explor.file import list_dir
 from models.request import (
     get_models,
     get_current_model,
@@ -13,7 +13,6 @@ from models.request import (
 app = Flask(__name__)
 
 
-# ============ 全局:禁止浏览器缓存静态文件 ============
 @app.after_request
 def no_cache(response):
     """开发期间防止浏览器缓存 HTML/CSS/JS,改完即生效"""
@@ -58,8 +57,6 @@ def api_switch_model():
         return jsonify({"ok": True, "current": get_current_model()})
     return jsonify({"ok": False, "error": f"未知模型: {model_id}"}), 404
 
-
-# ============ 文件夹/文件树 ============
 _MOBILE_UA_KEYWORDS = (
     'android', 'iphone', 'ipad', 'ipod', 'mobile', 'webos', 'opera mini',
 )
@@ -74,16 +71,6 @@ def _is_mobile_user_agent(ua: str) -> bool:
 
 @app.get('/api/folder')
 def api_folder():
-    """
-    列出指定目录的一级内容。
-    Query:
-        path: 可选,目录绝对路径;缺省时:
-              - 移动端 (mobile UA) → /sdcard
-              - 桌面端 → 当前用户的家目录
-    Returns:
-        {"ok": true, "platform": "mobile|desktop", "default_path": "...", "tree": {...}}
-        失败时 {"ok": false, "error": "..."}。
-    """
     path = (flask_request.args.get('path') or '').strip()
     ua = flask_request.headers.get('User-Agent', '')
     is_mobile = _is_mobile_user_agent(ua)
@@ -95,7 +82,7 @@ def api_folder():
             path = os.path.expanduser('~')
 
     try:
-        tree = list_tree(path)
+        tree = list_dir(path)
     except FileNotFoundError as e:
         return jsonify({"ok": False, "error": str(e)}), 404
     except NotADirectoryError as e:
@@ -112,6 +99,9 @@ def api_folder():
         "tree": tree,
     })
 
+@app.get('/api/chat')
+def api_chat():
+    return jsonify({"ok": True})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=9191, debug=False)

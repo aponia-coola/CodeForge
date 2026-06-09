@@ -7,18 +7,6 @@ def list(path):
 def create(file_path):
     with open(file_path, 'w', encoding='utf-8') as file:
         file.write("")
-
-
-    """
-    读取文件内容,默认带行号。
-
-    path:
-        文件路径,相对路径以本文件所在目录为基准
-    start_line:
-        起始行号(1-indexed,包含),None 表示从第 1 行开始,读取到末尾
-    返回:
-        字符串,格式 "  N | content"(N 为行号,右对齐宽度自适应)
-    """
 def read(path, start_line=None):
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -32,25 +20,23 @@ def read(path, start_line=None):
     total = s + len(selected)
     width = len(str(total)) if total > 0 else 1
     return ''.join(f"{s + i + 1:>{width}} | {line}" for i, line in enumerate(selected))
-    
+
 
 """
+    修改文件内容。
+
     mode:
-        'append' - 追加到文件末尾(默认)
-        'edit'   - 按行编辑
+        'edit'   - 按行替换(默认),通过 position/end_line 指定替换范围
+        'append' - 追加到文件末尾
     position:
         edit 模式下必填,起始行号(0-indexed,包含)
     end_line:
         结束行号(不包含),默认 position + 1,即只替换 position 这一行
         end_line == position 时为纯插入(不替换任何行)
     """
-def append(file_path, content, mode='append', position=None, end_line=None, chunk_size=4096):
+def change(file_path, content, mode='edit', position=None, end_line=None, chunk_size=4096):
 
-    if mode == 'append':
-        with open(file_path, 'a', encoding='utf-8') as file:
-            for i in range(0, len(content), chunk_size):
-                file.write(content[i:i + chunk_size])
-    elif mode == 'edit':
+    if mode == 'edit':
         if position is None:
             raise ValueError("edit 模式需要指定 position(行号)")
         if end_line is None:
@@ -61,28 +47,28 @@ def append(file_path, content, mode='append', position=None, end_line=None, chun
         lines[position:end_line] = [segment]
         with open(file_path, 'w', encoding='utf-8') as file:
             file.writelines(lines)
+    elif mode == 'append':
+        with open(file_path, 'a', encoding='utf-8') as file:
+            for i in range(0, len(content), chunk_size):
+                file.write(content[i:i + chunk_size])
     else:
-        raise ValueError(f"不支持的 mode: {mode},可选 'append' 或 'edit'")
+        raise ValueError(f"不支持的 mode: {mode},可选 'edit' 或 'append'")
 
 
-def list_tree(path, show_hidden=False):
+def remove_file(file_path):
     """
-    列出指定目录下的一级内容,分文件夹与文件两类返回。
-    供前端资源管理器渲染文件树使用。
-
-    Args:
-        path: 目录绝对路径
-        show_hidden: 是否包含以 "." 开头的隐藏项,默认 False
-
-    Returns:
-        dict,结构如下:
-        {
-            "path": "<绝对路径>",
-            "folders": [{"name": "...", "path": "..."}, ...],
-            "files":   [{"name": "...", "path": "...", "size": <int>}, ...]
-        }
-        各类内部按名称升序排序;路径不存在或不是目录时抛 FileNotFoundError / NotADirectoryError。
+    删除指定文件(不存在/不是文件会报错)。
+    内部复用 os.remove,做绝对路径化和存在性校验。
     """
+    abs_path = os.path.abspath(file_path)
+    if not os.path.exists(abs_path):
+        raise FileNotFoundError(f"文件不存在: {abs_path}")
+    if not os.path.isfile(abs_path):
+        raise NotADirectoryError(f"不是文件: {abs_path}")
+    os.remove(abs_path)
+
+
+def list_dir(path, show_hidden=False):
     abs_path = os.path.abspath(path)
     if not os.path.exists(abs_path):
         raise FileNotFoundError(f"路径不存在: {abs_path}")
@@ -106,5 +92,3 @@ def list_tree(path, show_hidden=False):
     folders.sort(key=lambda x: x["name"].lower())
     files.sort(key=lambda x: x["name"].lower())
     return {"path": abs_path, "folders": folders, "files": files}
-
-

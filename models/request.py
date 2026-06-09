@@ -1,13 +1,8 @@
 import json
 import os
 from pathlib import Path
-
 from openai import OpenAI
 
-# ============ 启动时只读一次的配置 ============
-# 模块级代码在 import 时执行一次,Python 的模块缓存保证不会重复加载,
-# 因此 model.json 在整个进程生命周期内默认只被读取一次;
-# 如需热切换,调用 reload_config() / set_current_model() 即可。
 _CONFIG_PATH = Path(__file__).resolve().parent / "model.json"
 _CONFIG: dict = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
 _CURRENT_MODEL: str = _CONFIG["current_model"]
@@ -15,15 +10,10 @@ _BASE_URL: str = _CONFIG["base_url"]
 _MODELS: list[dict] = list(_CONFIG.get("models", []))
 
 
-# ============ 启动时只创建一次的客户端 ============
 _client = OpenAI(
     api_key=os.environ.get("DEEPSEEK_API_KEY") or "sk-a32dc24893fc478782451979668eb124",
     base_url=_BASE_URL,
 )
-
-
-# ============ 公开 API ============
-
 def get_current_model() -> str:
     """返回当前生效的模型 id。"""
     return _CURRENT_MODEL
@@ -68,7 +58,6 @@ def reload_config(config_path: str | os.PathLike | None = None) -> dict:
     _CURRENT_MODEL = _CONFIG["current_model"]
     _BASE_URL = _CONFIG["base_url"]
     _MODELS = list(_CONFIG.get("models", []))
-    # 注意:_client 已用旧 base_url 创建;若切换了 endpoint,需重启进程或手动重建 _client
     return {
         "current_model": _CURRENT_MODEL,
         "base_url": _BASE_URL,
@@ -76,13 +65,37 @@ def reload_config(config_path: str | os.PathLike | None = None) -> dict:
     }
 
 
-def request(message: str) -> str:
-    """调用 model.json 中 current_model 指定的模型,完成一次对话。"""
-    response = _client.chat.completions.create(
-        model=_CURRENT_MODEL,
-        messages=[{"role": "user", "content": message}],
-        stream=False,
-        reasoning_effort="high",
-        extra_body={"thinking": {"type": "enabled"}},
-    )
-    return response.choices[0].message.content
+def request(
+    message: str | None = None,
+    messages: list | None = None,
+    tools: list | None = None,
+    use_thinking: bool = True,
+):
+    """
+    调用模型,支持工具调用。工具列表默认从 agent.tool._TOOLS 复用。
+    返回 message 对象(不是字符串),无工具时用 .content 拿正文,有工具时检查 .tool_calls。
+    """
+    # 1. 构造 messages
+    if messages is None:
+        if message is None:
+            raise ValueError("必须传 message 或 messages")
+        messages = [
+            {'role': 'system', 'content': 'You named CodeForge, an AI Agent IDE on Android Termux.'},
+            {"role": "user", "content": message},
+        ]
+
+    # 2. 工具列表(默认从 agent.tool 拿,懒加载避免循环 import)
+    if tools is None:
+        from agent.tool import _TOOLS
+        tools = _TOOLS or None
+
+    # 3. 构造请求
+    kwargs = dict(model=_CURRENT_MODEL, messages=messages, stream=False)
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+    if use_thinking:
+        kwargs["reasoning_effort"] = "high"
+        kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+
+    return _client.chat.completions.create(**kwargs).choices[0].message
