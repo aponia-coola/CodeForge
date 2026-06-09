@@ -9,8 +9,17 @@ from models.request import (
     get_base_url,
     set_current_model,
 )
+from agent import state as agent_state
+from agent import loop as agent_loop
 
 app = Flask(__name__)
+
+
+# ════════════════════════════════════════════════════════════
+#                      Agent 历史(内存会话)
+# ════════════════════════════════════════════════════════════
+# 简单进程内存储:UI 重启就清空;够用。
+_HISTORY: list[dict] = []
 
 
 @app.after_request
@@ -101,7 +110,129 @@ def api_folder():
 
 @app.get('/api/chat')
 def api_chat():
-    return jsonify({"ok": True})
+    """GET /api/chat → 返回当前 history + agent 状态(供前端初始化/刷新)。"""
+    return jsonify({
+        "ok":      True,
+        "history": _HISTORY,
+        "state":   agent_state.snapshot(),
+    })
+
+
+# ════════════════════════════════════════════════════════════
+#                      Agent Chat
+# ════════════════════════════════════════════════════════════
+
+@app.post('/api/chat')
+def api_chat_send():
+    """
+    发送一条消息给 Agent,执行一轮 loop(可能多轮工具调用)。
+    Body: {
+        "message":    str,           # 用户输入(可空,纯续接)
+        "history":    list|None,     # 可选:直接传完整 history,以前端为准
+        "max_rounds": int = 10,
+        "plan_model": bool|None,     # None=使用 state 当前值
+    }
+    Returns: {
+        "ok":        bool,
+        "answer":    str,
+        "rounds":    int,
+        "stopped":   "answer" | "pending" | "max_rounds" | "error",
+        "tools_used": [str,...],
+        "pending":   dict|None,
+        "history":   list,
+    }
+    """
+    data = flask_request.get_json(silent=True) or {}
+    global _HISTORY
+
+    # history 优先用 body 传的(前端全权管理),否则用进程内的
+    if "history" in data and isinstance(data["history"], list):
+        history = data["history"]
+    else:
+        history = _HISTORY
+
+    user_message = (data.get("message") or "").strip()
+    max_rounds   = int(data.get("max_rounds") or 10)
+    plan_model   = data.get("plan_model")  # None / True / False
+
+    try:
+        result = agent_loop.run(
+            user_message=user_message,
+            history=history,
+            max_rounds=max_rounds,
+            plan_model=plan_model,
+        )
+    except Exception as e:
+        return jsonify({
+            "ok":      False,
+            "error":   f"{type(e).__name__}: {e}",
+            "history": history,
+        }), 500
+
+    # 把 loop 跑完的最新 history 存回进程内(供后续 GET)
+    _HISTORY = result.get("history") or history
+
+    return jsonify({
+        "ok":         True,
+        "answer":     result.get("answer", ""),
+        "rounds":     result.get("rounds", 0),
+        "stopped":    result.get("stopped"),
+        "tools_used": result.get("tools_used", []),
+        "pending":    result.get("pending"),
+        "history":    result.get("history", []),
+        "state":      agent_state.snapshot(),
+    })
+
+
+@app.post('/api/chat/clear')
+def api_chat_clear():
+    """清空 history,同时清掉 pending。"""
+    global _HISTORY
+    _HISTORY = []
+    agent_state.clear_pending()
+    return jsonify({"ok": True, "history": [], "state": agent_state.snapshot()})
+
+
+# ════════════════════════════════════════════════════════════
+#                      Agent State / Pending
+# ════════════════════════════════════════════════════════════
+
+@app.get('/api/agent/state')
+def api_agent_state():
+    """读取 agent 状态:plan_model / auto / pending。"""
+    return jsonify({"ok": True, "state": agent_state.snapshot()})
+
+
+@app.post('/api/agent/state')
+def api_agent_state_set():
+    """
+    改 agent 状态。
+    Body: {"plan_model": bool?, "auto": bool?}
+    """
+    data = flask_request.get_json(silent=True) or {}
+    if "plan_model" in data:
+        agent_state.set_plan_model(bool(data["plan_model"]))
+    if "auto" in data:
+        agent_state.set_auto(bool(data["auto"]))
+    return jsonify({"ok": True, "state": agent_state.snapshot()})
+
+
+@app.post('/api/agent/pending/confirm')
+def api_agent_pending_confirm():
+    """
+    确认 pending(在 chat 中输入"确认"后,会触发 loop 自己走完)。
+    当前实现:清空 pending 状态,让前端的 pending 卡片立即关闭;
+    实际继续执行由 chat 里追加的"确认"消息驱动(loop.py 会临时开 auto)。
+    """
+    agent_state.clear_pending()
+    return jsonify({"ok": True, "state": agent_state.snapshot()})
+
+
+@app.post('/api/agent/pending/reject')
+def api_agent_pending_reject():
+    """拒绝 pending:直接清空(模型需要重新发指令)。"""
+    agent_state.clear_pending()
+    return jsonify({"ok": True, "state": agent_state.snapshot()})
 
 
 @app.post('/api/file/create')

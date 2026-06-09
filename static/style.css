@@ -1062,3 +1062,285 @@ body {
   outline: none;
   box-shadow: 0 0 0 3px rgba(139, 92, 246, .35), 0 2px 8px rgba(139, 92, 246, .35);
 }
+
+/* ============================================================
+   Agent Chat 增强(开关/待确认/工具调用/loading)
+   ============================================================ */
+.hidden { display: none !important; }
+
+/* ─── Toggle 开关 ─── */
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color var(--t-fast);
+}
+.toggle:hover { color: var(--text); }
+.toggle input { display: none; }
+.toggle-track {
+  position: relative;
+  width: 26px;
+  height: 14px;
+  background: var(--bg-active);
+  border-radius: 7px;
+  transition: background var(--t-fast);
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+}
+.toggle-thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 10px;
+  height: 10px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  transition: transform var(--t-fast), background var(--t-fast);
+}
+.toggle input:checked + .toggle-track {
+  background: rgba(139, 92, 246, .35);
+  border-color: var(--c-purple);
+}
+.toggle input:checked + .toggle-track .toggle-thumb {
+  transform: translateX(12px);
+  background: var(--c-purple-soft);
+  box-shadow: 0 0 4px var(--c-purple-soft);
+}
+.toggle-label {
+  font-family: "SF Mono", Consolas, monospace;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+
+/* ─── pending 红点(在工具栏 icon-btn 里) ─── */
+.icon-btn.pending-badge {
+  color: var(--c-red);
+  position: relative;
+  animation: pending-pulse 1.4s ease-in-out infinite;
+}
+.icon-btn.pending-badge::after {
+  content: "";
+  position: absolute;
+  top: 4px; right: 4px;
+  width: 6px; height: 6px;
+  background: var(--c-red);
+  border-radius: 50%;
+  box-shadow: 0 0 6px var(--c-red);
+}
+@keyframes pending-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+
+/* ─── pending 卡片 ─── */
+.pending-card {
+  margin: 8px 12px 0;
+  padding: 10px 12px;
+  background: rgba(254, 188, 46, .08);
+  border: 1px solid rgba(254, 188, 46, .35);
+  border-radius: 6px;
+  font-size: 12px;
+  animation: slide-in 0.25s cubic-bezier(.4, 0, .2, 1) both;
+}
+.pending-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.pending-card-title {
+  color: var(--c-orange);
+  font-weight: 600;
+  font-size: 12px;
+}
+.pending-card-action {
+  font-family: "SF Mono", Consolas, monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+.pending-card-body {
+  background: var(--bg-base);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  font-family: "SF Mono", Consolas, "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0 0 8px 0;
+}
+.pending-card-actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+.pending-btn {
+  border: none;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all var(--t-fast);
+}
+.pending-btn-ok {
+  background: var(--c-purple);
+  color: #fff;
+}
+.pending-btn-ok:hover { background: var(--c-purple-soft); }
+.pending-btn-no {
+  background: var(--bg-elevated);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.pending-btn-no:hover {
+  background: var(--bg-hover);
+  color: var(--c-red);
+  border-color: var(--c-red);
+}
+
+/* ─── 消息气泡(扩展 user/tool/loading) ─── */
+.msg-user { align-items: flex-end; }
+.msg-user .msg-label {
+  color: var(--c-blue);
+}
+.msg-user .msg-label::before { content: "▸"; color: var(--c-blue); }
+.msg-user .msg-bubble {
+  background: rgba(81, 154, 186, .10);
+  border: 1px solid rgba(81, 154, 186, .25);
+  color: var(--text-strong);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-tool .msg-label,
+.msg-tool-result .msg-label {
+  color: var(--text-muted);
+  font-size: 10px;
+  letter-spacing: 0.4px;
+}
+.tool-bubble {
+  background: var(--bg-base);
+  border: 1px dashed var(--border);
+  color: var(--c-yellow);
+  font-family: "SF Mono", Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tool-result-bubble {
+  background: var(--bg-base);
+  border: 1px solid var(--border-soft);
+  color: var(--text);
+  font-family: "SF Mono", Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow: auto;
+}
+
+.msg-loading .msg-bubble {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 12px 14px;
+}
+.msg-loading .dot {
+  width: 6px; height: 6px;
+  background: var(--c-purple-soft);
+  border-radius: 50%;
+  animation: dot-bounce 1.2s ease-in-out infinite;
+}
+.msg-loading .dot:nth-child(2) { animation-delay: 0.15s; }
+.msg-loading .dot:nth-child(3) { animation-delay: 0.30s; }
+@keyframes dot-bounce {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+  40%           { transform: scale(1.0); opacity: 1.0; }
+}
+
+.msg-status { text-align: center; margin: 4px 0; }
+.msg-status-text {
+  display: inline-block;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 2px 10px;
+  border-radius: 3px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-soft);
+}
+
+.msg-code {
+  display: block;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  font-family: "SF Mono", Consolas, monospace;
+  font-size: 11px;
+  color: var(--c-green);
+  overflow-x: auto;
+  white-space: pre;
+}
+.msg-inline-code {
+  background: var(--bg-base);
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-family: "SF Mono", Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--c-yellow);
+}
+
+/* ─── 发送按钮 disabled 态 ─── */
+.send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none !important;
+  box-shadow: none !important;
+}
+
+/* ─── AI 输入框自适应高度 ─── */
+.ai-input {
+  min-height: 60px;
+  max-height: 180px;
+  overflow-y: auto;
+  line-height: 1.5;
+}
+
+/* ============================================================
+   资源管理器 — 主动刷新按钮旋转动画
+   ============================================================ */
+#explorer-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+#explorer-refresh.spinning svg {
+  animation: explorer-refresh-spin 0.55s cubic-bezier(.4, 0, .2, 1);
+  transform-origin: 50% 50%;
+  color: var(--c-purple-soft);
+}
+@keyframes explorer-refresh-spin {
+  from { transform: rotate(0deg);   }
+  to   { transform: rotate(360deg); }
+}

@@ -126,6 +126,19 @@ def run(
     if plan_model is None:
         plan_model = state.get_plan_model()
 
+    # ── 用户发送"确认/继续/OK"等表达 → 清掉旧 pending + 临时开 auto ──
+    # 否则 pending 不被消费,新一轮一进来就看到 state.pending != None 直接 return,
+    # "确认"消息相当于没发,卡片也不会关;
+    # 即便清掉 pending,若 state.auto=False 模型再调工具,工具内部又会重新 set_pending,
+    # 用户陷入"无限确认"循环。所以确认时临时 auto=True,跑完再还原。
+    _CONFIRM_WORDS = {"确认", "继续", "ok", "OK", "Ok", "yes", "Yes", "YES",
+                      "确认吧", "可以", "批准", "approve", "Approved", "APPROVED"}
+    _saved_auto: bool | None = None
+    if user_message and user_message.strip() in _CONFIRM_WORDS:
+        state.clear_pending()
+        _saved_auto = state.get_auto()
+        state.set_auto(True)
+
     tools       = tool.get_tools(plan_model=plan_model)
     tools_used: list[str] = []
 
@@ -136,58 +149,63 @@ def run(
     if user_message and (not messages or messages[-1].get("role") != "user"):
         messages.append({"role": "user", "content": user_message})
 
-    for r in range(max_rounds):
-        try:
-            msg = model_request(messages=messages, tools=tools)
-        except Exception as e:
-            return {
-                "answer":     f"模型调用失败:{type(e).__name__}: {e}",
-                "rounds":     r,
-                "history":    messages,
-                "ok":         False,
-                "stopped":    "error",
-                "tools_used": tools_used,
-                "pending":    state.get_pending(),
-            }
-
-        # 没有 tool_calls → 收尾
-        if not msg.tool_calls:
-            messages.append(_msg_to_dict(msg))
-            return {
-                "answer":     msg.content or "",
-                "rounds":     r + 1,
-                "history":    messages,
-                "ok":         True,
-                "stopped":    "answer",
-                "tools_used": tools_used,
-                "pending":    state.get_pending(),
-            }
-
-        # 有 tool_calls → 记录并逐个执行
-        messages.append(_msg_to_dict(msg))
-        for call in msg.tool_calls:
-            if call.function.name not in tools_used:
-                tools_used.append(call.function.name)
-            result = _exec_with_retry(call, retries=1)
-            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
-            # 任一工具触发 pending → 整轮停下
-            if state.get_pending() is not None:
+    try:
+        for r in range(max_rounds):
+            try:
+                msg = model_request(messages=messages, tools=tools)
+            except Exception as e:
                 return {
-                    "answer":     "等待用户确认",
-                    "rounds":     r + 1,
+                    "answer":     f"模型调用失败:{type(e).__name__}: {e}",
+                    "rounds":     r,
                     "history":    messages,
-                    "ok":         True,
-                    "stopped":    "pending",
+                    "ok":         False,
+                    "stopped":    "error",
                     "tools_used": tools_used,
                     "pending":    state.get_pending(),
                 }
 
-    return {
-        "answer":     f"未收敛(达到 {max_rounds} 轮)",
-        "rounds":     max_rounds,
-        "history":    messages,
-        "ok":         False,
-        "stopped":    "max_rounds",
-        "tools_used": tools_used,
-        "pending":    state.get_pending(),
-    }
+            # 没有 tool_calls → 收尾
+            if not msg.tool_calls:
+                messages.append(_msg_to_dict(msg))
+                return {
+                    "answer":     msg.content or "",
+                    "rounds":     r + 1,
+                    "history":    messages,
+                    "ok":         True,
+                    "stopped":    "answer",
+                    "tools_used": tools_used,
+                    "pending":    state.get_pending(),
+                }
+
+            # 有 tool_calls → 记录并逐个执行
+            messages.append(_msg_to_dict(msg))
+            for call in msg.tool_calls:
+                if call.function.name not in tools_used:
+                    tools_used.append(call.function.name)
+                result = _exec_with_retry(call, retries=1)
+                messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+                # 任一工具触发 pending → 整轮停下
+                if state.get_pending() is not None:
+                    return {
+                        "answer":     "等待用户确认",
+                        "rounds":     r + 1,
+                        "history":    messages,
+                        "ok":         True,
+                        "stopped":    "pending",
+                        "tools_used": tools_used,
+                        "pending":    state.get_pending(),
+                    }
+
+        return {
+            "answer":     f"未收敛(达到 {max_rounds} 轮)",
+            "rounds":     max_rounds,
+            "history":    messages,
+            "ok":         False,
+            "stopped":    "max_rounds",
+            "tools_used": tools_used,
+            "pending":    state.get_pending(),
+        }
+    finally:
+        # 恢复用户原本的 auto 设置
+        if _saved_auto is not None:
+            state.set_auto(_saved_auto)

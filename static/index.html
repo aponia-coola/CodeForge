@@ -86,7 +86,7 @@
             <path d="M8 3v10M3 8h10"/>
           </svg>
         </span>
-        <span title="刷新">
+        <span title="刷新" id="explorer-refresh" data-action="refresh-explorer">
           <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
             <path d="M13 8a5 5 0 11-1.5-3.54L13 6"></path><path d="M13 2v4h-4"></path>
           </svg>
@@ -149,20 +149,49 @@
         <div class="ai-title">Agent</div>
         <div class="ai-actions">
           <div class="model-select">DeepSeek V4 Flash</div>
-          <span class="icon-btn" title="刷新">
+          <label class="toggle" title="计划模式:开启后,文件操作前必须先 plan">
+            <input type="checkbox" id="toggle-plan" checked>
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-label">Plan</span>
+          </label>
+          <label class="toggle" title="自动执行:关闭后,文件操作需要手动确认">
+            <input type="checkbox" id="toggle-auto" checked>
+            <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            <span class="toggle-label">Auto</span>
+          </label>
+          <span class="icon-btn pending-badge hidden" id="pending-badge" title="有待确认操作">
+            <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
+              <circle cx="8" cy="8" r="3"/>
+            </svg>
+          </span>
+          <span class="icon-btn" id="chat-refresh" title="刷新模型列表">
             <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
               <path d="M13 8a5 5 0 11-1.5-3.54L13 6"/><path d="M13 2v4h-4"/>
             </svg>
           </span>
-          <span class="icon-btn" title="清空">
+          <span class="icon-btn" id="chat-clear" title="清空对话">
             <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
               <path d="M3 4h10M6 4V2.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5V4M5 4l.5 9a1 1 0 001 1h3a1 1 0 001-1L11 4"/>
             </svg>
           </span>
         </div>
       </div>
-      <div class="ai-messages">
-        <div class="msg">
+
+      <!-- 待确认卡片(plan/文件操作) -->
+      <div class="pending-card hidden" id="pending-card">
+        <div class="pending-card-head">
+          <span class="pending-card-title" id="pending-title">⚠ 待确认</span>
+          <span class="pending-card-action" id="pending-action"></span>
+        </div>
+        <pre class="pending-card-body" id="pending-body"></pre>
+        <div class="pending-card-actions">
+          <button class="pending-btn pending-btn-ok" id="pending-confirm">确认</button>
+          <button class="pending-btn pending-btn-no" id="pending-reject">拒绝</button>
+        </div>
+      </div>
+
+      <div class="ai-messages" id="ai-messages">
+        <div class="msg msg-assistant">
           <div class="msg-label">Assistant</div>
           <div class="msg-bubble">
             您好!我是 Agent。我可以帮助您编写、重构、解释和调试代码。请问您想做什么?
@@ -170,10 +199,10 @@
         </div>
       </div>
       <div class="ai-input-wrap">
-        <textarea class="ai-input" placeholder="向 AI 提问... (Shift+Enter 换行)"></textarea>
+        <textarea class="ai-input" id="ai-input" placeholder="向 AI 提问... (Enter 发送,Shift+Enter 换行)"></textarea>
         <div class="ai-input-footer">
-          <span>Enter 发送 · Shift+Enter 换行</span>
-          <button class="send-btn">
+          <span id="ai-status">Enter 发送 · Shift+Enter 换行</span>
+          <button class="send-btn" id="send-btn">
             <svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor"><path d="M2 2l12 6L2 14l2.5-6L2 2z"/></svg>
             发送
           </button>

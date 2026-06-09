@@ -275,9 +275,123 @@
   // 当前已打开的根路径(用于 ↑ 返回上级 & 输入框默认值)
   let currentRoot = null;
 
-  function openFolder(path, onSuccess) {
+  // ── 自动刷新:每 ~2.5s 轮询根目录 + 所有已展开子目录 ──
+  // 简单 name+size 签名做 diff,变了就替换对应 .explorer-list 的 DOM。
+  const WATCH_INTERVAL_MS = 2500;
+  const treeSignature = new Map();   // path -> "D:foo|F:bar.txt:42|..." 字符串签名
+  let watcherTimer = null;
+
+  function computeSignature(tree) {
+    if (!tree) return '';
+    const parts = [];
+    for (const f of tree.folders) parts.push('D:' + f.name);
+    for (const f of tree.files)   parts.push('F:' + f.name + ':' + (f.size || 0));
+    parts.sort();
+    return parts.join('|');
+  }
+
+  function pollPath(path) {
+    if (!path) return Promise.resolve(false);
+    return fetch(`/api/folder?path=${encodeURIComponent(path)}&_t=${Date.now()}`)
+      .then(r => r.json())
+      .then(d => {
+        if (!d || !d.ok || !d.tree) return false;
+        const sig = computeSignature(d.tree);
+        const old = treeSignature.get(path);
+        if (old === sig) return false;
+        treeSignature.set(path, sig);
+        replaceListInDom(path, d.tree);
+        return true;
+      })
+      .catch(() => false);
+  }
+
+  function pollAll() {
+    if (!currentRoot) return;
+    pollPath(currentRoot);
+    for (const p of expandedFolders) pollPath(p);
+  }
+
+  function startWatcher() {
+    stopWatcher();
+    if (!currentRoot) return;
+    // 立即跑一次(不等 interval)
+    pollAll();
+    watcherTimer = setInterval(pollAll, WATCH_INTERVAL_MS);
+  }
+
+  function stopWatcher() {
+    if (watcherTimer) { clearInterval(watcherTimer); watcherTimer = null; }
+  }
+
+  // 用新的 tree 替换 DOM 里对应的 .explorer-list 节点
+  // 保留原本的 indent 类(展开子层会有),保留 list 节点位置
+  function replaceListInDom(path, tree) {
+    if (!explorer) return;
+    // CSS.escape 防止路径里含特殊字符
+    const sel = `.explorer-list[data-path="${CSS.escape(path)}"]`;
+    const old = explorer.querySelector(sel);
+    if (!old) return;
+    const fresh = buildListEl(tree);
+    if (old.classList.contains('explorer-list-indent')) {
+      fresh.classList.add('explorer-list-indent');
+    }
+    old.parentNode.replaceChild(fresh, old);
+  }
+
+  // ── 手动刷新按钮:强制立刻轮询(忽略签名比较) ──
+  const explorerRefresh = document.getElementById('explorer-refresh');
+  if (explorerRefresh) {
+    explorerRefresh.addEventListener('click', e => {
+      e.stopPropagation();
+      if (!currentRoot) return;            // 没开过文件夹 → 无目标
+      explorerRefresh.classList.add('spinning');
+      // 强制清掉所有签名,确保下次 pollPath 一定走 DOM 替换
+      treeSignature.clear();
+      const tasks = [pollPath(currentRoot)];
+      for (const p of expandedFolders) tasks.push(pollPath(p));
+      Promise.all(tasks).finally(() => {
+        setTimeout(() => explorerRefresh.classList.remove('spinning'), 400);
+      });
+    });
+  }
+
+  // ════════════════════════════════════════════════════════════
+  //   工作目录缓存:刷新后回到上次的目录(localStorage 持久化)
+  // ════════════════════════════════════════════════════════════
+  //   缓存格式 { root: "C:/path", ts: 1234 }
+  //   只存 root;expanded 列表每次切换根都会清,暂不持久化
+  const EXPLORER_CACHE_KEY = 'codeforge:explorer:state';
+
+  function saveExplorerState() {
+    if (!currentRoot) return;
+    try {
+      localStorage.setItem(EXPLORER_CACHE_KEY, JSON.stringify({
+        root: currentRoot,
+        ts:   Date.now(),
+      }));
+    } catch (e) { /* localStorage 不可用(隐私模式/禁用)→ 静默 */ }
+  }
+
+  function clearExplorerState() {
+    try { localStorage.removeItem(EXPLORER_CACHE_KEY); } catch (e) {}
+  }
+
+  function loadExplorerState() {
+    try {
+      const raw = localStorage.getItem(EXPLORER_CACHE_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      if (!data || typeof data.root !== 'string' || !data.root) return null;
+      return data;
+    } catch (e) { return null; }
+  }
+
+  function openFolder(path, onSuccess, options) {
     // 切换根 → 之前打开/展开的所有子层全部关闭,只保留新根
+    const isRestore = !!(options && options.isRestore);
     expandedFolders.clear();
+    treeSignature.clear();        // 旧签名作废
     const url = path ? `/api/folder?path=${encodeURIComponent(path)}` : '/api/folder';
     fetch(url)
       .then(r => r.json().then(data => ({ status: r.status, data })))
@@ -285,12 +399,22 @@
         if (status === 200 && data.ok) {
           currentRoot = data.tree.path;
           renderTree(data.tree, /* asRoot */ true);
+          // 写入根的签名,启动 watcher
+          treeSignature.set(currentRoot, computeSignature(data.tree));
+          startWatcher();
+          // 持久化:刷新后能回到这里
+          saveExplorerState();
           if (onSuccess) onSuccess(data.tree);
         } else {
           showExplorerError((data && data.error) || `请求失败 (${status})`);
+          // 恢复失败:目录被删/权限没了 → 清掉过期缓存,免得每次刷新都进死循环
+          if (isRestore) clearExplorerState();
         }
       })
-      .catch(err => showExplorerError(String(err)));
+      .catch(err => {
+        showExplorerError(String(err));
+        if (isRestore) clearExplorerState();
+      });
   }
 
   // 顶栏"打开文件夹"按钮触发的内联路径输入框
@@ -781,6 +905,8 @@
             // 缩进:把列表里的行再加一层 padding
             list.classList.add('explorer-list-indent');
             rowEl.parentNode.insertBefore(list, rowEl.nextSibling);
+            // 写入子目录签名,后续轮询才能 diff
+            treeSignature.set(folder.path, computeSignature(data.tree));
           } else {
             console.error('展开失败:', (data && data.error) || status);
             rowEl.classList.remove('expanded');
@@ -837,4 +963,414 @@
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
     }[c]));
   }
+
+  // ============================================================
+  //                Agent Chat(发送键 / 历史 / 待确认)
+  // ============================================================
+  const aiMessages  = document.getElementById('ai-messages');
+  const aiInput     = document.getElementById('ai-input');
+  const sendBtn     = document.getElementById('send-btn');
+  const aiStatus    = document.getElementById('ai-status');
+  const togglePlan  = document.getElementById('toggle-plan');
+  const toggleAuto  = document.getElementById('toggle-auto');
+  const chatClear   = document.getElementById('chat-clear');
+  const chatRefresh = document.getElementById('chat-refresh');
+  const pendingCard     = document.getElementById('pending-card');
+  const pendingBadge    = document.getElementById('pending-badge');
+  const pendingTitle    = document.getElementById('pending-title');
+  const pendingAction   = document.getElementById('pending-action');
+  const pendingBody     = document.getElementById('pending-body');
+  const pendingConfirm  = document.getElementById('pending-confirm');
+  const pendingReject   = document.getElementById('pending-reject');
+
+  // 客户端 history(后端也会存,这里再保留一份方便下次进入时直接用)
+  let history = [];
+  let sending = false;
+
+  // ──────── 初始化:拉 history + agent state ────────
+  function loadChat() {
+    fetch('/api/chat')
+      .then(r => r.json())
+      .then(data => {
+        if (!data || !data.ok) return;
+        history = Array.isArray(data.history) ? data.history : [];
+        if (data.state) applyAgentState(data.state);
+        renderHistory();
+      })
+      .catch(err => console.error('拉取 chat 状态失败:', err));
+  }
+
+  function loadAgentState() {
+    fetch('/api/agent/state')
+      .then(r => r.json())
+      .then(data => { if (data && data.ok) applyAgentState(data.state); })
+      .catch(err => console.error('拉取 agent 状态失败:', err));
+  }
+
+  function applyAgentState(s) {
+    if (!s) return;
+    if (typeof s.plan_model === 'boolean' && togglePlan) togglePlan.checked = s.plan_model;
+    if (typeof s.auto === 'boolean' && toggleAuto) toggleAuto.checked = s.auto;
+    renderPending(s.pending);
+  }
+
+  // ──────── 渲染消息历史(从 history 还原) ────────
+  function renderHistory() {
+    if (!aiMessages) return;
+    // 只清掉旧的"真实"消息(保留首屏欢迎语?这里清掉,统一从 history 渲染)
+    aiMessages.innerHTML = '';
+    if (!history || history.length === 0) {
+      // 空时插回欢迎语
+      aiMessages.innerHTML = `
+        <div class="msg msg-assistant">
+          <div class="msg-label">Assistant</div>
+          <div class="msg-bubble">您好!我是 Agent。我可以帮助您编写、重构、解释和调试代码。请问您想做什么?</div>
+        </div>`;
+      return;
+    }
+    for (const m of history) appendHistoryNode(m);
+    scrollToBottom();
+  }
+
+  function appendHistoryNode(m) {
+    if (!aiMessages || !m) return;
+    if (m.role === 'user') {
+      appendMessage('user', m.content || '');
+    } else if (m.role === 'assistant') {
+      if (m.content) appendMessage('assistant', m.content);
+      if (Array.isArray(m.tool_calls)) {
+        for (const tc of m.tool_calls) {
+          appendToolCall(tc);
+        }
+      }
+    } else if (m.role === 'tool') {
+      appendToolResult(m);
+    }
+  }
+
+  function appendMessage(role, text) {
+    if (!aiMessages) return;
+    const div = document.createElement('div');
+    div.className = `msg msg-${role}`;
+    const label = document.createElement('div');
+    label.className = 'msg-label';
+    label.textContent = role === 'user' ? 'You' : 'Assistant';
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    bubble.innerHTML = formatMarkdownLite(text || '');
+    div.appendChild(label);
+    div.appendChild(bubble);
+    aiMessages.appendChild(div);
+    scrollToBottom();
+  }
+
+  function appendToolCall(tc) {
+    if (!aiMessages || !tc || !tc.function) return;
+    let args = {};
+    try { args = JSON.parse(tc.function.arguments || '{}'); } catch (e) { args = { _raw: tc.function.arguments }; }
+    const div = document.createElement('div');
+    div.className = 'msg msg-tool';
+    div.innerHTML = `
+      <div class="msg-label">🔧 ${escapeHtml(tc.function.name || 'tool')}</div>
+      <div class="msg-bubble tool-bubble">${escapeHtml(JSON.stringify(args, null, 2))}</div>`;
+    aiMessages.appendChild(div);
+    scrollToBottom();
+  }
+
+  function appendToolResult(m) {
+    if (!aiMessages) return;
+    const div = document.createElement('div');
+    div.className = 'msg msg-tool-result';
+    const txt = (m.content || '').toString();
+    const trimmed = txt.length > 600 ? txt.slice(0, 600) + '\n…(已截断)' : txt;
+    div.innerHTML = `
+      <div class="msg-label">↳ 结果</div>
+      <div class="msg-bubble tool-result-bubble">${escapeHtml(trimmed)}</div>`;
+    aiMessages.appendChild(div);
+    scrollToBottom();
+  }
+
+  function appendLoading() {
+    if (!aiMessages) return null;
+    const div = document.createElement('div');
+    div.className = 'msg msg-assistant msg-loading';
+    div.innerHTML = `
+      <div class="msg-label">Assistant</div>
+      <div class="msg-bubble"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
+    aiMessages.appendChild(div);
+    scrollToBottom();
+    return div;
+  }
+
+  function appendStatus(text) {
+    if (!aiMessages) return null;
+    const div = document.createElement('div');
+    div.className = 'msg msg-status';
+    div.innerHTML = `<div class="msg-status-text">${escapeHtml(text)}</div>`;
+    aiMessages.appendChild(div);
+    scrollToBottom();
+    return div;
+  }
+
+  function scrollToBottom() {
+    if (!aiMessages) return;
+    requestAnimationFrame(() => {
+      aiMessages.scrollTop = aiMessages.scrollHeight;
+    });
+  }
+
+  // 极简 markdown:代码块 + 段落换行
+  function formatMarkdownLite(s) {
+    s = escapeHtml(s || '');
+    // ```code``` → <pre><code>
+    s = s.replace(/```([\s\S]*?)```/g, (_, c) => `<pre class="msg-code">${c}</pre>`);
+    // `inline`
+    s = s.replace(/`([^`\n]+)`/g, '<code class="msg-inline-code">$1</code>');
+    // 换行 → <br>
+    s = s.replace(/\n/g, '<br>');
+    return s;
+  }
+
+  // ──────── 待确认卡片 ────────
+  function renderPending(pending) {
+    if (!pending) {
+      if (pendingCard)  pendingCard.classList.add('hidden');
+      if (pendingBadge) pendingBadge.classList.add('hidden');
+      return;
+    }
+    if (pendingCard)  pendingCard.classList.remove('hidden');
+    if (pendingBadge) pendingBadge.classList.remove('hidden');
+    if (pendingAction) pendingAction.textContent = pending.action || '';
+    if (pendingTitle)  pendingTitle.textContent = '⚠ 待确认:' + (pending.action || '');
+    if (pendingBody) {
+      const md = pending.markdown
+        || JSON.stringify(pending.args, null, 2)
+        || '';
+      pendingBody.innerHTML = formatMarkdownLite(md);
+    }
+  }
+
+  // ──────── 发送消息 ────────
+  async function sendMessage() {
+    if (sending) return;
+    if (!aiInput) return;
+    const text = aiInput.value.trim();
+    if (!text) return;
+
+    sending = true;
+    sendBtn && (sendBtn.disabled = true);
+    if (aiStatus) aiStatus.textContent = '思考中…';
+
+    // 1. 立即把用户消息渲染上去
+    appendMessage('user', text);
+    aiInput.value = '';
+    autoResize();
+
+    // 2. 同步推入 history
+    history.push({ role: 'user', content: text });
+
+    // 3. loading 占位
+    const loading = appendLoading();
+
+    try {
+      const r = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: text,
+          history: history,
+          plan_model: togglePlan ? togglePlan.checked : null,
+        }),
+      });
+      const data = await r.json();
+
+      // 4. 拆掉 loading
+      if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
+
+      if (!data || !data.ok) {
+        appendStatus('✗ 失败: ' + ((data && data.error) || r.status));
+        return;
+      }
+
+      // 5. 用后端返回的 history 同步本地(它含 assistant + tool_calls + tool 结果)
+      if (Array.isArray(data.history)) history = data.history;
+      // 把最后一条 assistant 的新内容也单独展示(冗余但更醒目)
+      const lastAssistant = [...history].reverse().find(m => m.role === 'assistant');
+      if (lastAssistant && !Array.isArray(lastAssistant.tool_calls) && lastAssistant.content) {
+        // 已经从 history 渲染过,不再追加
+      } else {
+        // 有工具调用但最后一条不是 assistant,补一行
+        if (data.answer) appendMessage('assistant', data.answer);
+      }
+
+      // 6. 把这一轮新增的 assistant/tool 行追加进视图(history 可能很长,这里只渲染尾部新增)
+      //    为简单:重新渲染尾部,从 lastUserIndex 之后开始
+      reRenderFromLastUser();
+
+      // 7. 处理 pending
+      renderPending(data.pending);
+      if (data.pending) {
+        appendStatus('⏸ 等待用户确认(见上方卡片)');
+      } else if (data.stopped === 'max_rounds') {
+        appendStatus('⚠ 达到最大轮次,未收敛');
+      } else if (data.stopped === 'error') {
+        appendStatus('✗ 错误,已停止');
+      }
+    } catch (err) {
+      if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
+      appendStatus('✗ 请求失败: ' + err);
+    } finally {
+      sending = false;
+      sendBtn && (sendBtn.disabled = false);
+      if (aiStatus) aiStatus.textContent = 'Enter 发送 · Shift+Enter 换行';
+      aiInput && aiInput.focus();
+    }
+  }
+
+  // 从最后一条 user 之后开始,重新渲染(包含 tool_calls/tool/assistant)
+  function reRenderFromLastUser() {
+    if (!aiMessages) return;
+    // 找到最后一条 user 的 index
+    let lastUserIdx = -1;
+    for (let i = history.length - 1; i >= 0; i--) {
+      if (history[i].role === 'user') { lastUserIdx = i; break; }
+    }
+    // 删掉 ai-messages 里最后那条 user 之后的所有节点
+    const userNodes = aiMessages.querySelectorAll('.msg-user');
+    const lastUserNode = userNodes[userNodes.length - 1];
+    if (lastUserNode) {
+      let n = lastUserNode.nextSibling;
+      while (n) {
+        const nx = n.nextSibling;
+        n.parentNode && n.parentNode.removeChild(n);
+        n = nx;
+      }
+    }
+    // 重新追加 lastUserIdx 之后的所有消息节点
+    for (let i = lastUserIdx + 1; i < history.length; i++) {
+      appendHistoryNode(history[i]);
+    }
+    scrollToBottom();
+  }
+
+  function autoResize() {
+    if (!aiInput) return;
+    aiInput.style.height = 'auto';
+    aiInput.style.height = Math.min(aiInput.scrollHeight, 180) + 'px';
+  }
+
+  // ──────── 事件绑定 ────────
+  if (sendBtn) {
+    sendBtn.addEventListener('click', e => {
+      e.preventDefault();
+      sendMessage();
+    });
+  }
+  if (aiInput) {
+    aiInput.addEventListener('keydown', e => {
+      // Enter 发送,Shift+Enter 换行
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendMessage();
+      }
+    });
+    aiInput.addEventListener('input', autoResize);
+  }
+  if (togglePlan) {
+    togglePlan.addEventListener('change', () => {
+      fetch('/api/agent/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ plan_model: togglePlan.checked }),
+      }).catch(err => console.error(err));
+    });
+  }
+  if (toggleAuto) {
+    toggleAuto.addEventListener('change', () => {
+      fetch('/api/agent/state', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auto: toggleAuto.checked }),
+      }).catch(err => console.error(err));
+    });
+  }
+  if (chatClear) {
+    chatClear.addEventListener('click', () => {
+      if (!confirm('确定清空当前对话?')) return;
+      fetch('/api/chat/clear', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+          if (data && data.ok) {
+            history = [];
+            renderPending(null);
+            renderHistory();
+          }
+        })
+        .catch(err => console.error(err));
+    });
+  }
+  if (chatRefresh) {
+    chatRefresh.addEventListener('click', () => {
+      // 重新拉模型列表(复用既有逻辑)
+      fetch('/api/models')
+        .then(r => r.json())
+        .then(d => {
+          const sel = document.querySelector('.model-select');
+          if (sel && d && Array.isArray(d.models)) {
+            sel.dataset.models = JSON.stringify(d.models);
+            const cur = d.models.find(m => m.id === d.current);
+            if (cur) {
+              const lbl = sel.querySelector('.model-label');
+              if (lbl) lbl.textContent = cur.name;
+            }
+          }
+        })
+        .catch(err => console.error(err));
+    });
+  }
+  if (pendingConfirm) {
+    pendingConfirm.addEventListener('click', () => {
+      // 乐观关闭:用户已点确认,先把卡片收掉,避免等待后端响应
+      renderPending(null);
+      // 同步通知后端清 pending(双保险,即便后端先于 chat 响应到达也不冲突)
+      fetch('/api/agent/pending/confirm', { method: 'POST' }).catch(() => {});
+      if (aiInput) {
+        aiInput.value = '确认';
+        sendMessage();
+      }
+    });
+  }
+  if (pendingReject) {
+    pendingReject.addEventListener('click', () => {
+      fetch('/api/agent/pending/reject', { method: 'POST' })
+        .then(r => r.json())
+        .then(() => { renderPending(null); appendStatus('✗ 已拒绝当前操作'); })
+        .catch(err => console.error(err));
+    });
+  }
+
+  // ──────── 全局快捷键:聚焦输入框 ────────
+  document.addEventListener('keydown', e => {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    if (e.key.toLowerCase() === 'l' && !e.shiftKey) {
+      // Ctrl/Cmd+L 聚焦 AI 输入框
+      e.preventDefault();
+      aiInput && aiInput.focus();
+    }
+  });
+
+  // 启动时拉一次
+  loadChat();
+  loadAgentState();
+
+  // ── 恢复上次的工作目录(localStorage) ──
+  // 失败(目录被删/无权限)时 openFolder 会清掉过期缓存
+  function initExplorer() {
+    const cached = loadExplorerState();
+    if (cached && cached.root) {
+      openFolder(cached.root, null, { isRestore: true });
+    }
+    // 没缓存 → 保持空状态 UI(等用户主动打开)
+  }
+  initExplorer();
 })();
