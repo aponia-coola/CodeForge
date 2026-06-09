@@ -163,6 +163,98 @@
       openFolder(null, () => showOpenFolderInput());
     });
   }
+
+  // ============ 资源管理器:新建文件 / 新建文件夹 ============
+  // 空状态的两个按钮 + 顶栏图标都共用同一处理函数(基于 currentRoot 决定目录)
+  async function ensureRoot() {
+    if (currentRoot) return currentRoot;
+    // 没开过文件夹 → 用服务端默认路径(home 或 /sdcard)
+    const r = await fetch('/api/folder');
+    const d = await r.json();
+    if (d.ok) { currentRoot = d.tree.path; return currentRoot; }
+    throw new Error(d.error || '无法获取默认路径');
+  }
+
+  // 内联 input 行(与"打开文件夹"input 行同款,prompt() 在嵌入式浏览器被禁)
+  function showCreateInput(type) {
+    if (!explorer) return;
+    // 已存在就先聚焦
+    const existing = explorer.querySelector('.explorer-input-row');
+    if (existing) { existing.querySelector('input').focus(); return; }
+
+    const placeholder = type === 'file' ? '例如: newfile.txt' : '例如: newfolder';
+    const endpoint    = type === 'file' ? '/api/file/create' : '/api/folder/create';
+
+    const inputRow = document.createElement('div');
+    inputRow.className = 'explorer-input-row';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'explorer-path-input';
+    input.placeholder = placeholder;
+    input.spellcheck = false;
+    input.autocomplete = 'off';
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.className = 'sidebar-confirm-btn';
+    confirmBtn.textContent = '确定';
+
+    inputRow.appendChild(input);
+    inputRow.appendChild(confirmBtn);
+    explorer.insertBefore(inputRow, explorer.firstChild);
+    input.focus();
+
+    const cleanup = () => inputRow.remove();
+
+    const submit = async () => {
+      const name = input.value.trim();
+      if (!name) { cleanup(); return; }
+      confirmBtn.disabled = true;
+      try {
+        const path = await ensureRoot();
+        const r = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path, name, content: '' }),
+        });
+        const d = await r.json();
+        if (!d.ok) {
+          confirmBtn.disabled = false;
+          input.value = '';
+          input.placeholder = '失败: ' + d.error;
+          input.focus();
+          return;
+        }
+        cleanup();
+        openFolder(currentRoot);  // 刷新树
+      } catch (e) {
+        confirmBtn.disabled = false;
+        input.value = '';
+        input.placeholder = '请求失败: ' + e;
+        input.focus();
+      }
+    };
+
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter')      { e.preventDefault(); submit(); }
+      else if (e.key === 'Escape'){ e.preventDefault(); cleanup(); }
+    });
+    input.addEventListener('blur', e => {
+      const next = e.relatedTarget;
+      if (next && (next === input || next === confirmBtn ||
+                   next.closest('.explorer-input-row'))) return;
+      cleanup();
+    });
+    confirmBtn.addEventListener('click', e => { e.preventDefault(); submit(); });
+  }
+
+  document.querySelectorAll('[data-action="create-file"]').forEach(btn => {
+    btn.addEventListener('click', e => { e.stopPropagation(); showCreateInput('file'); });
+  });
+  document.querySelectorAll('[data-action="create-folder"]').forEach(btn => {
+    btn.addEventListener('click', e => { e.stopPropagation(); showCreateInput('folder'); });
+  });
   // 顶栏的"打开文件夹"按钮:始终可用,允许随时切换根目录
   const openFolderHeaderBtn = document.querySelector('.sidebar-header [data-action="open-folder-header"]');
   if (openFolderHeaderBtn) {
@@ -410,6 +502,7 @@
   function buildFileRow(file) {
     const row = document.createElement('div');
     row.className = 'file';
+    row.dataset.path = file.path;
     const icon = document.createElement('span');
     icon.className = `file-icon ${fileIconClass(file.name)}`;
     icon.textContent = fileExt(file.name);
@@ -419,6 +512,238 @@
     row.appendChild(name);
     row.title = file.path;
     return row;
+  }
+
+  // ============ 中间区:文件编辑器(CodeMirror + 语法高亮) ============
+  // 点击 .file 行 → fetch /api/file/read → 替换 .center 内容
+  if (explorer) {
+    explorer.addEventListener('click', e => {
+      const row = e.target.closest('.file');
+      if (!row) return;
+      const filePath = row.dataset.path || row.title;
+      if (filePath) openFileInEditor(filePath);
+    });
+  }
+
+  const center = document.querySelector('.center');
+  let currentEditor = null;  // {cm, path, name, saved}
+
+  // 文件扩展名 → CodeMirror mode 映射(未列出的走纯文本)
+  const MODE_MAP = {
+    py: 'python',
+    js: 'javascript', mjs: 'javascript', cjs: 'javascript',
+    jsx: 'jsx',
+    ts: 'text/typescript', tsx: 'text/typescript-jsx',
+    json: 'application/json', jsonc: 'application/json',
+    html: 'htmlmixed', htm: 'htmlmixed', xhtml: 'htmlmixed', vue: 'htmlmixed',
+    xml: 'xml', svg: 'xml',
+    css: 'css', scss: 'text/x-scss', less: 'text/x-less',
+    md: 'markdown', markdown: 'markdown',
+    yml: 'yaml', yaml: 'yaml',
+    sh: 'shell', bash: 'shell', zsh: 'shell',
+    sql: 'sql',
+    c: 'text/x-csrc', h: 'text/x-csrc',
+    cpp: 'text/x-c++src', cc: 'text/x-c++src', cxx: 'text/x-c++src',
+    hpp: 'text/x-c++src', hxx: 'text/x-c++src',
+    java: 'text/x-java',
+    cs: 'text/x-csharp',
+    go: 'text/x-go',
+    rs: 'text/x-rust',
+    kt: 'text/x-kotlin',
+    swift: 'text/x-swift',
+    php: 'application/x-httpd-php',
+    rb: 'text/x-ruby',
+    lua: 'text/x-lua',
+    toml: 'text/x-toml',
+    ini: 'text/x-ini',
+    log: 'text/x-log',
+  };
+  function modeFor(name) { return MODE_MAP[name.split('.').pop().toLowerCase()] || null; }
+
+  function openFileInEditor(filePath) {
+    if (!center) return;
+    center.classList.add('editor-mode');
+    center.innerHTML = '<div class="editor-loading">加载中...</div>';
+    fetch(`/api/file/read?path=${encodeURIComponent(filePath)}`)
+      .then(r => r.json().then(data => ({ status: r.status, data })))
+      .then(({ status, data }) => {
+        if (status === 200 && data.ok) {
+          renderEditor(data);
+        } else {
+          renderCenterError((data && data.error) || `请求失败 (${status})`);
+        }
+      })
+      .catch(err => renderCenterError(String(err)));
+  }
+
+  function renderEditor(file) {
+    if (!center) return;
+    center.classList.add('editor-mode');
+    center.innerHTML = '';
+
+    const header = document.createElement('div');
+    header.className = 'editor-header';
+
+    const name = document.createElement('span');
+    name.className = 'editor-name';
+    name.textContent = file.name;
+    name.title = file.path;
+    header.appendChild(name);
+
+    const status = document.createElement('span');
+    status.className = 'editor-status';
+    status.textContent = `${formatSize(file.size)} · ${file.content.split('\n').length} 行`;
+    header.appendChild(status);
+
+    const saveBtn = document.createElement('button');
+    saveBtn.className = 'editor-save-btn';
+    saveBtn.textContent = '保存';
+    saveBtn.title = '保存 (Ctrl+S)';
+    header.appendChild(saveBtn);
+
+    const close = document.createElement('span');
+    close.className = 'editor-close';
+    close.textContent = '×';
+    close.title = '关闭';
+    header.appendChild(close);
+
+    // CodeMirror 容器
+    const cmHost = document.createElement('div');
+    cmHost.className = 'editor-cm-host';
+
+    center.appendChild(header);
+    center.appendChild(cmHost);
+
+    const mode = modeFor(file.name);
+    const cm = CodeMirror(cmHost, {
+      value: file.content,
+      mode: mode,
+      theme: 'dracula',
+      lineNumbers: true,
+      indentUnit: 4,
+      tabSize: 4,
+      indentWithTabs: false,
+      lineWrapping: false,
+      autofocus: false,
+      matchBrackets: true,
+      autoCloseBrackets: true,
+      autoCloseTags: true,
+      foldGutter: true,
+      gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
+      extraKeys: {
+        'Ctrl-S': () => saveCurrentFile(),
+        'Cmd-S':  () => saveCurrentFile(),
+      },
+    });
+    // 等容器有尺寸再刷新(否则首屏空)
+    requestAnimationFrame(() => cm.refresh());
+
+    let saved = file.content;
+    let dirty = false;
+    setStatus(saved, dirty, file.size);
+
+    cm.on('change', () => {
+      const v = cm.getValue();
+      if (v === saved) {
+        if (dirty) { dirty = false; setStatus(saved, dirty, file.size); }
+      } else {
+        if (!dirty) { dirty = true; setStatus(saved, dirty, file.size); }
+      }
+    });
+
+    function setStatus(s, d, sz) {
+      if (d) {
+        status.classList.add('editor-dirty');
+        status.textContent = '● 未保存';
+        saveBtn.disabled = false;
+      } else {
+        status.classList.remove('editor-dirty');
+        status.textContent = `${formatSize(sz || new Blob([s]).size)} · ${s.split('\n').length} 行`;
+        saveBtn.disabled = true;
+      }
+    }
+
+    function flashSaved() {
+      status.classList.add('editor-saved');
+      status.textContent = '✓ 已保存';
+      setTimeout(() => {
+        status.classList.remove('editor-saved');
+        status.textContent = `${formatSize(file.size)} · ${file.content.split('\n').length} 行`;
+      }, 1500);
+    }
+
+    function save() {
+      if (!dirty) return;
+      saveBtn.disabled = true;
+      status.classList.remove('editor-saved', 'editor-dirty');
+      status.textContent = '保存中…';
+      fetch('/api/file/save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: file.path, content: cm.getValue() }),
+      })
+        .then(r => r.json().then(data => ({ status: r.status, data })))
+        .then(({ status, data }) => {
+          if (status === 200 && data.ok) {
+            saved = cm.getValue();
+            dirty = false;
+            file.size = data.size;
+            flashSaved();
+          } else {
+            status.textContent = '✗ 保存失败: ' + ((data && data.error) || status);
+            saveBtn.disabled = false;
+          }
+        })
+        .catch(err => {
+          status.textContent = '✗ 保存失败: ' + err;
+          saveBtn.disabled = false;
+        });
+    }
+
+    saveBtn.addEventListener('click', save);
+    close.addEventListener('click', () => {
+      if (dirty && !confirm('有未保存的修改,确定关闭吗?')) return;
+      showCenterEmpty();
+    });
+    window.addEventListener('beforeunload', e => {
+      if (dirty) { e.preventDefault(); e.returnValue = ''; }
+    });
+
+    currentEditor = { cm, file, save, getDirty: () => dirty };
+  }
+
+  function saveCurrentFile() {
+    if (currentEditor && !currentEditor.cm.getOption('readOnly')) {
+      currentEditor.save();
+    }
+  }
+
+  function renderCenterError(msg) {
+    if (!center) return;
+    center.classList.add('editor-mode');
+    center.innerHTML = `<div class="editor-error">读取失败: ${escapeHtml(msg)}</div>`;
+  }
+
+  function showCenterEmpty() {
+    if (!center) return;
+    center.classList.remove('editor-mode');
+    // 恢复空状态(完全复制 index.html 里的结构)
+    center.innerHTML = `
+      <div class="center-icon">&lt;/&gt;</div>
+      <div class="center-title">CodeForge</div>
+      <div class="center-sub">AI 驱动的网页编码工作台</div>
+      <div class="shortcuts">
+        <div class="shortcut-row"><span class="kbd">Ctrl+P</span> 快速打开</div>
+        <div class="shortcut-row"><span class="kbd">Ctrl+Shift+P</span> 命令面板</div>
+        <div class="shortcut-row"><span class="kbd">Ctrl+J</span> 切换 Agent 栏</div>
+        <div class="shortcut-row"><span class="kbd">Ctrl+B</span> 切换资源管理器</div>
+      </div>`;
+  }
+
+  function formatSize(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1024 / 1024).toFixed(1) + ' MB';
   }
 
   function toggleFolder(rowEl, folder) {

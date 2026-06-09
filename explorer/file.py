@@ -68,7 +68,7 @@ def remove_file(file_path):
     os.remove(abs_path)
 
 
-def list_dir(path, show_hidden=False):
+def list_dir(path, show_hidden=True):
     abs_path = os.path.abspath(path)
     if not os.path.exists(abs_path):
         raise FileNotFoundError(f"路径不存在: {abs_path}")

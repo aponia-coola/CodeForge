@@ -300,6 +300,127 @@ body {
 }
 .center > * { position: relative; z-index: 1; }
 
+/* editor 模式:覆盖默认的居中布局 */
+.center.editor-mode {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  padding: 0;
+  background: var(--bg-base);
+}
+.center.editor-mode::before { display: none; }
+
+.editor-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+  flex-shrink: 0;
+}
+.editor-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: "SF Mono", Consolas, monospace;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editor-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: "SF Mono", Consolas, monospace;
+}
+.editor-close {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 20px;
+  line-height: 1;
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 4px;
+  user-select: none;
+  transition: background .15s, color .15s;
+}
+.editor-close:hover {
+  background: var(--bg-hover);
+  color: var(--c-red);
+}
+.editor-content {
+  flex: 1;
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  font-family: "SF Mono", Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text);
+  background: var(--bg-base);
+  white-space: pre;
+  tab-size: 4;
+}
+.editor-loading, .editor-error {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.editor-error { color: var(--c-red); }
+
+/* CodeMirror 容器(填满 editor-mode 剩余空间) */
+.editor-cm-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+.editor-cm-host .CodeMirror {
+  flex: 1;
+  height: 100% !important;
+  font-family: "SF Mono", Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.65;
+}
+.editor-cm-host .CodeMirror-scroll { min-height: 0; }
+
+/* 状态文字(默认 / 未保存 / 已保存) */
+.editor-status {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: "SF Mono", Consolas, monospace;
+  transition: color .2s;
+}
+.editor-status.editor-dirty { color: var(--c-yellow); }
+.editor-status.editor-saved { color: #50fa7b; }
+
+/* 保存按钮 */
+.editor-save-btn {
+  background: rgba(139, 92, 246, .12);
+  color: var(--c-purple-soft);
+  border: 1px solid rgba(139, 92, 246, .35);
+  border-radius: 4px;
+  padding: 3px 12px;
+  font-size: 11px;
+  font-family: "SF Mono", Consolas, monospace;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.editor-save-btn:hover:not(:disabled) {
+  background: rgba(139, 92, 246, .25);
+  border-color: var(--c-purple-soft);
+}
+.editor-save-btn:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
 .center-icon {
   width: 72px; height: 72px;
   background: linear-gradient(135deg, var(--bg-elevated) 0%, #252528 100%);

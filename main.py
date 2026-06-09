@@ -2,7 +2,7 @@ import os
 
 from flask import Flask, jsonify, request as flask_request
 
-from explorer.file import list_dir
+from explorer.file import list_dir, create as file_create
 from models.request import (
     get_models,
     get_current_model,
@@ -102,6 +102,110 @@ def api_folder():
 @app.get('/api/chat')
 def api_chat():
     return jsonify({"ok": True})
+
+
+@app.post('/api/file/create')
+def api_create_file():
+    """
+    在指定目录下创建新文件(已存在 → 409)。
+    Body: {"path": "<dir>", "name": "<filename>", "content": ""}
+    """
+    data = flask_request.get_json(silent=True) or {}
+    parent = (data.get("path") or "").strip()
+    name   = (data.get("name") or "").strip()
+    content = data.get("content", "")
+    if not parent or not name:
+        return jsonify({"ok": False, "error": "缺少 path 或 name"}), 400
+    if "/" in name or "\\" in name:
+        return jsonify({"ok": False, "error": "name 不能含路径分隔符"}), 400
+    full = os.path.join(parent, name)
+    try:
+        if os.path.exists(full):
+            return jsonify({"ok": False, "error": f"已存在: {name}"}), 409
+        file_create(full)
+        if content:
+            from explorer.file import change
+            change(full, content, mode="append")
+        return jsonify({"ok": True, "path": full})
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post('/api/folder/create')
+def api_create_folder():
+    """
+    在指定目录下创建新文件夹(已存在 → 409)。
+    Body: {"path": "<dir>", "name": "<foldername>"}
+    """
+    data = flask_request.get_json(silent=True) or {}
+    parent = (data.get("path") or "").strip()
+    name   = (data.get("name") or "").strip()
+    if not parent or not name:
+        return jsonify({"ok": False, "error": "缺少 path 或 name"}), 400
+    if "/" in name or "\\" in name:
+        return jsonify({"ok": False, "error": "name 不能含路径分隔符"}), 400
+    full = os.path.join(parent, name)
+    try:
+        if os.path.exists(full):
+            return jsonify({"ok": False, "error": f"已存在: {name}"}), 409
+        os.makedirs(full, exist_ok=False)
+        return jsonify({"ok": True, "path": full})
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.get('/api/file/read')
+def api_file_read():
+    """
+    读取文件原文(走 utf-8,失败字符用 U+FFFD 替代)。
+    Query: ?path=<绝对路径>
+    """
+    path = (flask_request.args.get('path') or '').strip()
+    if not path:
+        return jsonify({"ok": False, "error": "缺少 path"}), 400
+    if not os.path.exists(path):
+        return jsonify({"ok": False, "error": f"文件不存在: {path}"}), 404
+    if not os.path.isfile(path):
+        return jsonify({"ok": False, "error": "不是文件(可能是目录)"}), 400
+    try:
+        size  = os.path.getsize(path)
+        mtime = os.path.getmtime(path)
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            content = f.read()
+        return jsonify({
+            "ok":      True,
+            "path":    path,
+            "name":    os.path.basename(path),
+            "size":    size,
+            "mtime":   mtime,
+            "content": content,
+        })
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post('/api/file/save')
+def api_file_save():
+    """
+    整体覆写文件(utf-8)。
+    Body: {"path": "<abs>", "content": "..."}
+    """
+    data = flask_request.get_json(silent=True) or {}
+    path    = (data.get('path') or '').strip()
+    content = data.get('content', '')
+    if not path:
+        return jsonify({"ok": False, "error": "缺少 path"}), 400
+    if not os.path.exists(path):
+        return jsonify({"ok": False, "error": f"文件不存在: {path}"}), 404
+    if not os.path.isfile(path):
+        return jsonify({"ok": False, "error": "不是文件(可能是目录)"}), 400
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        size = os.path.getsize(path)
+        return jsonify({"ok": True, "path": path, "size": size})
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=9191, debug=False)
