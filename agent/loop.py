@@ -7,6 +7,7 @@
 - history 中 ChatCompletionMessage 序列化为 dict,方便 UI 持久化
 """
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,7 @@ def _load_prompt() -> dict:
     return json.loads(_PROMPT_PATH.read_text(encoding="utf-8"))
 
 
-def _build_system_prompt(plan_model: bool = True) -> str:
+def _build_system_prompt(plan_model: bool = True, cwd: str | None = None) -> str:
     p = _load_prompt()
     if plan_model:
         stages = "\n".join(f"- **{k}**: {v}" for k, v in p["stages"].items())
@@ -47,7 +48,19 @@ def _build_system_prompt(plan_model: bool = True) -> str:
             "2. 工具失败可重试 1 次(loop 自动处理),仍失败就放弃并告知用户\n"
             "3. 当前 plan_model=False,所有文件工具 auto=True 时立即执行,无需 plan 确认"
         )
-    return f"{p['system']}\n\n{plan_section}"
+
+    # 当前工作目录(从资源管理器同步):仅当 cwd 非空时注入,告诉模型把"用户给的相对路径"拼成绝对路径
+    cwd_section = (
+        f"\n\n## 当前工作目录\n`{cwd}`\n\n"
+        f"用户在资源管理器中打开了上述目录。所有 list_dir / read_file / create_file / "
+        f"edit_file / remove_file 工具调用都应当围绕此目录:\n"
+        f"- 用户没指定完整路径时,把 cwd 作为前缀拼成绝对路径后再调用"
+        f"(例如用户说\"在 main.py 里加一行\",工具 file_path 应当传 `{os.path.join(cwd, 'main.py')}`)\n"
+        f"- 用户已指定绝对路径时,直接用用户给的(不要被 cwd 干扰)\n"
+        f"- 需要列目录、读文件、写文件时,优先围绕 cwd 推断路径,无需再次询问"
+    ) if cwd else ""
+
+    return f"{p['system']}\n\n{plan_section}{cwd_section}"
 
 
 def _msg_to_dict(msg: Any) -> dict:
@@ -105,6 +118,7 @@ def run(
     history: list | None = None,
     max_rounds: int = 10,
     plan_model: bool | None = None,
+    cwd: str | None = None,
 ) -> dict:
     """
     Args:
@@ -112,6 +126,7 @@ def run(
         history:      之前累积的消息列表
         max_rounds:   最大工具调用轮次
         plan_model:   临时覆盖 state.plan_model
+        cwd:          当前工作目录(从资源管理器同步),注入到 system prompt
     Returns:
         {
             "answer":     str,            # 本轮最终回答
@@ -145,7 +160,7 @@ def run(
     messages = [m for m in (history or []) if isinstance(m, dict)]
     # 重建 system prompt 以反映当前 plan_model 状态
     messages = [m for m in messages if m.get("role") != "system"]
-    messages.insert(0, {"role": "system", "content": _build_system_prompt(plan_model=plan_model)})
+    messages.insert(0, {"role": "system", "content": _build_system_prompt(plan_model=plan_model, cwd=cwd)})
     if user_message and (not messages or messages[-1].get("role") != "user"):
         messages.append({"role": "user", "content": user_message})
 

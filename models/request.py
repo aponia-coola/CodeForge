@@ -11,7 +11,7 @@ _MODELS: list[dict] = list(_CONFIG.get("models", []))
 
 
 _client = OpenAI(
-    api_key=os.environ.get("DEEPSEEK_API_KEY") or "sk-a32dc24893fc478782451979668eb124",
+    api_key="sk-cp-QRz1k081mNqMN6TOb9NIjdx_SlpsokoIDxxDJOM2e0srlmD1F_w0Xj5D2Ymhd7Cwsz0NPHEac3u0Q0BO0H3o1EdJEOwgtRU6XlhCptamUcqb4r2npgtF74s",
     base_url=_BASE_URL,
 )
 def get_current_model() -> str:
@@ -95,7 +95,6 @@ def request(
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
     if use_thinking:
-        kwargs["reasoning_effort"] = "high"
-        kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+       kwargs["extra_body"] = {"reasoning_split": True}
 
     return _client.chat.completions.create(**kwargs).choices[0].message

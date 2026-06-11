@@ -154,6 +154,7 @@ def api_chat_send():
     user_message = (data.get("message") or "").strip()
     max_rounds   = int(data.get("max_rounds") or 10)
     plan_model   = data.get("plan_model")  # None / True / False
+    cwd          = (data.get("cwd") or "").strip() or None  # 前端资源管理器当前根目录(可选)
 
     try:
         result = agent_loop.run(
@@ -161,6 +162,7 @@ def api_chat_send():
             history=history,
             max_rounds=max_rounds,
             plan_model=plan_model,
+            cwd=cwd,
         )
     except Exception as e:
         return jsonify({

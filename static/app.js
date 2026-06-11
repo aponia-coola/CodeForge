@@ -1119,16 +1119,19 @@
     });
   }
 
-  // 极简 markdown:代码块 + 段落换行
+// 完整 markdown 渲染:标题/列表/引用/表格/链接/代码块 等
+  // marked.parse → DOMPurify.sanitize 防 XSS
   function formatMarkdownLite(s) {
-    s = escapeHtml(s || '');
-    // ```code``` → <pre><code>
-    s = s.replace(/```([\s\S]*?)```/g, (_, c) => `<pre class="msg-code">${c}</pre>`);
-    // `inline`
-    s = s.replace(/`([^`\n]+)`/g, '<code class="msg-inline-code">$1</code>');
-    // 换行 → <br>
-    s = s.replace(/\n/g, '<br>');
-    return s;
+    if (!s) return '';
+    if (typeof marked === 'undefined') {
+      // 兜底:CDN 加载失败时退回转义 + 换行
+      return escapeHtml(s).replace(/\n/g, '<br>');
+    }
+    marked.setOptions({ gfm: true, breaks: true });
+    const raw = marked.parse(s);
+    return typeof DOMPurify !== 'undefined'
+      ? DOMPurify.sanitize(raw, { ADD_ATTR: ['target', 'rel'] })
+      : raw;
   }
 
   // ──────── 待确认卡片 ────────
@@ -1179,6 +1182,7 @@
         body: JSON.stringify({
           message: text,
           history: history,
+          cwd: currentRoot || null,
           plan_model: togglePlan ? togglePlan.checked : null,
         }),
       });
