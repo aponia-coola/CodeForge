@@ -62,18 +62,43 @@
   const icons = document.querySelectorAll('.sidebar-icons [data-target]');
   icons.forEach(icon => {
     icon.addEventListener('click', () => {
-      const panel = document.querySelector(icon.dataset.target);
+      const target = icon.dataset.target;
+      // SCM 是 sidebar 内部的视图切换(显示/隐藏 explorer 与 scm-view),不走折叠
+      if (target === '.scm-view') {
+        icon.classList.add('active');
+        document.querySelector('.sidebar-icons [data-target=".sidebar"]')?.classList.remove('active');
+        switchSidebarView('scm');
+        loadGitStatus();
+        return;
+      }
+      // 普通折叠(资源管理器 / Agent 栏)
+      const panel = document.querySelector(target);
       if (!panel) return;
-
       const isCollapsed = panel.classList.toggle('collapsed');
       icon.classList.toggle('active', !isCollapsed);
-      // 折叠时清掉拖拽留下的内联 width,避免 .collapsed { width:0 } 被覆盖
       if (isCollapsed) panel.style.width = '';
-      // 同步手柄的显隐
-      const handle = document.querySelector(`.resize-handle[data-target="${icon.dataset.target}"]`);
+      const handle = document.querySelector(`.resize-handle[data-target="${target}"]`);
       if (handle) handle.style.display = isCollapsed ? 'none' : '';
+      // 切回资源管理器视图
+      if (target === '.sidebar') {
+        switchSidebarView('explorer');
+      }
     });
   });
+
+  // sidebar 内部:explorer / scm 互斥显示
+  function switchSidebarView(which) {
+    const explorerEl = document.querySelector('.sidebar .explorer');
+    const scmEl      = document.getElementById('scm-view');
+    if (!explorerEl || !scmEl) return;
+    if (which === 'scm') {
+      explorerEl.style.display = 'none';
+      scmEl.style.display = '';
+    } else {
+      explorerEl.style.display = '';
+      scmEl.style.display = 'none';
+    }
+  }
 
   // ============ 快捷键:Ctrl+B 折叠资源管理器,Ctrl+J 折叠 Agent 栏 ============
   document.addEventListener('keydown', e => {
@@ -681,6 +706,228 @@
   function renderDiffBodyEmpty() {
     if (!diffBodyEl) return;
     diffBodyEl.innerHTML = '';
+  }
+
+  // ──────── SCM(源代码管理) ────────
+  const scmBranchEl  = document.getElementById('scm-branch');
+  const scmAheadEl   = document.getElementById('scm-ahead');
+  const scmChangesEl = document.getElementById('scm-changes');
+  const scmRefreshEl = document.getElementById('scm-refresh');
+  const scmMsgEl     = document.getElementById('scm-commit-msg');
+  const scmCommitBtn = document.getElementById('scm-commit-btn');
+
+  let scmStatus = null;   // {branch, ahead, behind, changes: [...]}
+  let scmBusy   = false;  // 防止并发
+
+  async function loadGitStatus() {
+    if (!scmChangesEl) return;
+    let cwd = currentRoot;
+    if (!cwd) {
+      try {
+        const r = await fetch('/api/folder');
+        const d = await r.json();
+        if (d.ok) cwd = d.tree.path;
+      } catch (e) { /* 静默 */ }
+    }
+    if (!cwd) {
+      renderScmNotGit('未打开任何目录');
+      return;
+    }
+    try {
+      const r = await fetch('/api/git/status?path=' + encodeURIComponent(cwd));
+      const d = await r.json();
+      if (!d.ok) {
+        renderScmError(d.error || '加载失败');
+        return;
+      }
+      if (!d.is_git) {
+        renderScmNotGit('当前目录不是 git 仓库');
+        return;
+      }
+      scmStatus = d;
+      renderScm();
+    } catch (e) {
+      renderScmError(String(e));
+    }
+  }
+  function renderScmNotGit(msg) {
+    if (scmBranchEl) scmBranchEl.textContent = '—';
+    if (scmAheadEl)  scmAheadEl.textContent  = '';
+    if (!scmChangesEl) return;
+    scmChangesEl.innerHTML = `<div class="scm-not-git">${escapeHtml(msg)}</div>`;
+  }
+  function renderScmError(msg) {
+    if (!scmChangesEl) return;
+    scmChangesEl.innerHTML = `<div class="scm-error">⚠ ${escapeHtml(msg)}</div>`;
+  }
+  function renderScm() {
+    if (!scmStatus || !scmChangesEl) return;
+    if (scmBranchEl) scmBranchEl.textContent = scmStatus.branch || '—';
+    if (scmAheadEl) {
+      const a = scmStatus.ahead  || 0;
+      const b = scmStatus.behind || 0;
+      scmAheadEl.textContent = (a || b) ? `↑${a} ↓${b}` : '';
+    }
+    const changes = scmStatus.changes || [];
+    const staged   = changes.filter(c => c.staged);
+    const unstaged = changes.filter(c => !c.staged);
+
+    let html = '';
+    if (staged.length) {
+      html += `<div class="scm-section-title">暂存的更改 <span class="scm-count">${staged.length}</span></div>`;
+      html += staged.map(renderScmFile).join('');
+    }
+    if (unstaged.length) {
+      const title = staged.length ? '更改' : '更改';
+      html += `<div class="scm-section-title">${title} <span class="scm-count">${unstaged.length}</span></div>`;
+      html += unstaged.map(renderScmFile).join('');
+    }
+    if (!staged.length && !unstaged.length) {
+      html = `<div class="scm-empty">✓ 工作区干净</div>`;
+    }
+    scmChangesEl.innerHTML = html;
+
+    scmChangesEl.querySelectorAll('.scm-file').forEach(row => {
+      const path = row.dataset.path;
+      const staged = row.classList.contains('staged');
+      row.addEventListener('click', e => {
+        if (e.target.closest('.scm-file-actions')) return;
+        showGitDiff(path, staged);
+      });
+      row.querySelector('.scm-act-discard')?.addEventListener('click', e => {
+        e.stopPropagation(); gitDiscard(path);
+      });
+      row.querySelector('.scm-act-stage')?.addEventListener('click', e => {
+        e.stopPropagation(); if (staged) gitUnstage(path); else gitStage(path);
+      });
+    });
+  }
+
+  function renderScmFile(c) {
+    const x = c.x || '?';
+    const cls = (c.staged ? 'staged' : '');
+    const actStage = c.staged ? '−' : '+';
+    const stageTitle = c.staged ? '取消暂存' : '暂存';
+    return `<div class="scm-file ${cls}" data-path="${escapeHtml(c.path)}" title="${escapeHtml(c.path)}">
+      <span class="scm-status ${escapeHtml(x)}">${escapeHtml(x === '?' ? '?' : x)}</span>
+      <span class="scm-name">${escapeHtml(c.path)}</span>
+      <span class="scm-file-actions">
+        <span class="scm-act-stage" title="${stageTitle}">${actStage}</span>
+        <span class="scm-act-discard" title="放弃改动">⟲</span>
+      </span>
+    </div>`;
+  }
+
+  async function gitStage(path) {
+    if (scmBusy) return;
+    scmBusy = true;
+    try {
+      await fetch('/api/git/stage', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cwd: currentRoot, path }) });
+      await loadGitStatus();
+    } finally { scmBusy = false; }
+  }
+  async function gitUnstage(path) {
+    if (scmBusy) return;
+    scmBusy = true;
+    try {
+      await fetch('/api/git/unstage', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cwd: currentRoot, path }) });
+      await loadGitStatus();
+    } finally { scmBusy = false; }
+  }
+  async function gitDiscard(path) {
+    if (!confirm(`放弃 ${path} 的本地改动?`)) return;
+    if (scmBusy) return;
+    scmBusy = true;
+    try {
+      await fetch('/api/git/discard', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cwd: currentRoot, path }) });
+      await loadGitStatus();
+    } finally { scmBusy = false; }
+  }
+  async function gitCommit() {
+    const msg = (scmMsgEl?.value || '').trim();
+    if (!msg) { scmMsgEl?.focus(); return; }
+    if (scmBusy) return;
+    scmBusy = true;
+    scmCommitBtn.disabled = true;
+    try {
+      const r = await fetch('/api/git/commit', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cwd: currentRoot, message: msg }) });
+      const d = await r.json();
+      if (d.ok) {
+        scmMsgEl.value = '';
+        appendStatus(`✓ commit ${d.hash || ''}`);
+        await loadGitStatus();
+      } else {
+        appendStatus('✗ commit 失败: ' + (d.output || d.error || ''));
+      }
+    } finally {
+      scmBusy = false;
+      scmCommitBtn.disabled = false;
+    }
+  }
+
+  async function showGitDiff(path, staged) {
+    try {
+      const r = await fetch('/api/git/diff?path=' + encodeURIComponent(path)
+        + '&cwd=' + encodeURIComponent(currentRoot || '')
+        + (staged ? '&staged=1' : ''));
+      const d = await r.json();
+      if (!d.ok || !d.diff) {
+        appendStatus('该文件无 diff');
+        return;
+      }
+      renderGitDiffInline(path, d.diff);
+    } catch (e) {
+      appendStatus('diff 加载失败: ' + e);
+    }
+  }
+  function renderGitDiffInline(path, diffText) {
+    if (!diffViewerEl) return;
+    centerEl?.classList.add('diff-mode');
+    if (welcomeEl) welcomeEl.style.display = 'none';
+    if (diffViewerEl) diffViewerEl.style.display = '';
+    const name = path.split(/[\\/]/).pop();
+    diffFiles = [{ path: '[git] ' + path, name, op: 'edit' }];
+    diffActive = diffFiles[0].path;
+    diffTabsEl.innerHTML = '';
+    const tab = document.createElement('div');
+    tab.className = 'diff-tab op-edit active';
+    tab.innerHTML =
+      `<span class="diff-tab-name">🔧 ${escapeHtml(name)} <span class="diff-tab-op">GIT</span></span>`;
+    diffTabsEl.appendChild(tab);
+    diffBodyEl.innerHTML = '';
+    for (const ln of (diffText || '').split('\n')) {
+      let type = 'ctx', gutter = ' ';
+      if (ln.startsWith('+++') || ln.startsWith('---')) type = 'meta';
+      else if (ln.startsWith('@@')) { type = 'hunk'; gutter = '@'; }
+      else if (ln.startsWith('+')) { type = 'add'; gutter = '+'; }
+      else if (ln.startsWith('-')) { type = 'del'; gutter = '−'; }
+      const row = document.createElement('div');
+      row.className = 'diff-line ' + type;
+      row.innerHTML =
+        `<span class="diff-gutter">${gutter}</span>` +
+        `<span class="diff-text">${escapeHtml(ln)}</span>`;
+      diffBodyEl.appendChild(row);
+    }
+    diffBodyEl.scrollTop = 0;
+    diffTabsEl.classList.remove('flash');
+    void diffTabsEl.offsetWidth;
+    diffTabsEl.classList.add('flash');
+  }
+
+  // SCM 事件绑定
+  if (scmRefreshEl) scmRefreshEl.addEventListener('click', () => loadGitStatus());
+  if (scmCommitBtn) scmCommitBtn.addEventListener('click', () => gitCommit());
+  if (scmMsgEl) {
+    scmMsgEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        gitCommit();
+      }
+    });
   }
 
   function renderTree(tree, asRoot) {

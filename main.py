@@ -12,6 +12,7 @@ from models.request import (
 from agent import state as agent_state
 from agent import loop as agent_loop
 from agent import diff as agent_diff
+from git import engine as agent_git
 
 app = Flask(__name__)
 
@@ -289,6 +290,110 @@ def api_diff_clear():
     path = (data.get("path") or "").strip() or None
     agent_diff.clear(path)
     return jsonify({"ok": True, "files": agent_diff.list_pending()})
+
+
+# ════════════════════════════════════════════════════════════
+#                      Git 源代码管理(Tier 1)
+# ════════════════════════════════════════════════════════════
+
+@app.get('/api/git/status')
+def api_git_status():
+    """git status --porcelain=v1 -b → {branch, ahead, behind, changes: [...]}"""
+    path = (flask_request.args.get('path') or '').strip() or os.path.expanduser('~')
+    if not os.path.isdir(path):
+        return jsonify({"ok": False, "error": f"路径不存在: {path}"}), 400
+    if not agent_git.is_repo(path):
+        return jsonify({"ok": True, "is_git": False, "path": path})
+    try:
+        s = agent_git.status(path)
+        return jsonify({"ok": True, "is_git": True, "path": path, **s})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.get('/api/git/diff')
+def api_git_diff():
+    """git diff <path> 或 --staged,返回 unified diff 文本。"""
+    path = (flask_request.args.get('path') or '').strip()
+    cwd  = (flask_request.args.get('cwd')  or '').strip()
+    staged = flask_request.args.get('staged') == '1'
+    if not path or not cwd:
+        return jsonify({"ok": False, "error": "缺少 path/cwd"}), 400
+    try:
+        text = agent_git.diff(cwd, path, staged=staged)
+        return jsonify({"ok": True, "diff": text})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post('/api/git/stage')
+def api_git_stage():
+    """git add <path> 或 git add -A (path='-A')"""
+    data = flask_request.get_json(silent=True) or {}
+    cwd  = (data.get('cwd')  or '').strip()
+    path = (data.get('path') or '').strip()
+    if not cwd or not path:
+        return jsonify({"ok": False, "error": "缺少 cwd/path"}), 400
+    if path == '-A':
+        p = subprocess_run_git(cwd, 'add', '-A')
+    else:
+        p = agent_git.stage(cwd, path)
+    return jsonify({"ok": p[0] if isinstance(p, tuple) else (p.returncode == 0),
+                    "stderr": p[1] if isinstance(p, tuple) else (p.stderr or '').strip()})
+
+
+@app.post('/api/git/unstage')
+def api_git_unstage():
+    """git reset HEAD <path> 或 git reset(全撤)"""
+    data = flask_request.get_json(silent=True) or {}
+    cwd  = (data.get('cwd')  or '').strip()
+    path = (data.get('path') or '').strip()
+    if not cwd:
+        return jsonify({"ok": False, "error": "缺少 cwd"}), 400
+    if path == '-A' or not path:
+        ok, err = _git_reset_all(cwd)
+    else:
+        ok, err = agent_git.unstage(cwd, path)
+    return jsonify({"ok": ok, "stderr": err})
+
+
+@app.post('/api/git/discard')
+def api_git_discard():
+    """放弃工作区改动(对 modified 走 git checkout,对 untracked 走 git clean -f)"""
+    data = flask_request.get_json(silent=True) or {}
+    cwd  = (data.get('cwd')  or '').strip()
+    path = (data.get('path') or '').strip()
+    if not cwd or not path:
+        return jsonify({"ok": False, "error": "缺少 cwd/path"}), 400
+    ok, err = agent_git.discard(cwd, path)
+    return jsonify({"ok": ok, "stderr": err})
+
+
+@app.post('/api/git/commit')
+def api_git_commit():
+    """git commit -m <message>"""
+    data = flask_request.get_json(silent=True) or {}
+    cwd     = (data.get('cwd')     or '').strip()
+    message = (data.get('message') or '').strip()
+    if not cwd or not message:
+        return jsonify({"ok": False, "error": "缺少 cwd/message"}), 400
+    ok, out, h = agent_git.commit(cwd, message)
+    return jsonify({"ok": ok, "output": out, "hash": h})
+
+
+def subprocess_run_git(cwd, *args):
+    """包装 subprocess.run 给上面的 stage(-A) 用。"""
+    import subprocess
+    p = subprocess.run(['git', *args], cwd=cwd, capture_output=True,
+                       text=True, encoding='utf-8', errors='replace', timeout=15)
+    return (p.returncode == 0, (p.stderr or '').strip())
+
+
+def _git_reset_all(cwd):
+    import subprocess
+    p = subprocess.run(['git', 'reset'], cwd=cwd, capture_output=True,
+                       text=True, encoding='utf-8', errors='replace', timeout=15)
+    return (p.returncode == 0, (p.stderr or '').strip())
 
 
 @app.post('/api/agent/state')
