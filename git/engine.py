@@ -119,3 +119,14 @@ def commit(cwd: str, message: str) -> tuple[bool, str, str]:
         return False, (p.stderr or p.stdout or '').strip(), ''
     h = _run(cwd, 'rev-parse', '--short', 'HEAD')
     return True, (p.stdout or '').strip(), (h.stdout or '').strip()
+
+
+def push(cwd: str, remote: str = '', branch: str = '') -> tuple[bool, str]:
+    """`git push [<remote> [<branch>]]`,远程/分支留空则用当前 upstream。"""
+    args = ['push']
+    if remote:
+        args.append(remote)
+    if branch:
+        args.append(branch)
+    p = _run(cwd, *args, timeout=60)
+    return p.returncode == 0, (p.stdout or p.stderr or '').strip()

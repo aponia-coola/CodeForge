@@ -722,6 +722,7 @@
   const scmRefreshEl = document.getElementById('scm-refresh');
   const scmMsgEl     = document.getElementById('scm-commit-msg');
   const scmCommitBtn = document.getElementById('scm-commit-btn');
+  const scmPushBtn   = document.getElementById('scm-push-btn');
 
   let scmStatus = null;   // {branch, ahead, behind, changes: [...]}
   let scmBusy   = false;  // 防止并发
@@ -876,6 +877,33 @@
     }
   }
 
+  async function gitPush() {
+    if (scmBusy) return;
+    if (!confirm('推送到当前 upstream?\n\n认证:确保系统 git 已配好 SSH key 或 credential manager。')) return;
+    scmBusy = true;
+    scmPushBtn.disabled = true;
+    try {
+      const r = await fetch('/api/git/push', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cwd: currentRoot }) });
+      const d = await r.json();
+      if (d.ok) {
+        appendStatus('✓ 推送成功');
+        await loadGitStatus();
+      } else {
+        const err = d.output || d.error || '';
+        appendStatus('✗ 推送失败: ' + err);
+        if (/could not read username|password|authentication|permission denied/i.test(err)) {
+          appendStatus('💡 提示:系统 git 没配好认证,先在终端跑一次 `git push` 让它记住凭据。');
+        } else if (/non-fast-forward|rejected|fetch first/i.test(err)) {
+          appendStatus('💡 提示:远程有新的提交,先 `git pull` 再 push。');
+        }
+      }
+    } finally {
+      scmBusy = false;
+      scmPushBtn.disabled = false;
+    }
+  }
+
   async function showGitDiff(path, staged) {
     try {
       const r = await fetch('/api/git/diff?path=' + encodeURIComponent(path)
@@ -928,6 +956,7 @@
   // SCM 事件绑定
   if (scmRefreshEl) scmRefreshEl.addEventListener('click', () => loadGitStatus());
   if (scmCommitBtn) scmCommitBtn.addEventListener('click', () => gitCommit());
+  if (scmPushBtn)   scmPushBtn.addEventListener('click', () => gitPush());
   if (scmMsgEl) {
     scmMsgEl.addEventListener('keydown', e => {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {

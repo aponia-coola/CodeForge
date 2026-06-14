@@ -381,6 +381,19 @@ def api_git_commit():
     return jsonify({"ok": ok, "output": out, "hash": h})
 
 
+@app.post('/api/git/push')
+def api_git_push():
+    """git push [remote [branch]],remote/branch 缺省时用当前 upstream。"""
+    data    = flask_request.get_json(silent=True) or {}
+    cwd     = (data.get('cwd')     or '').strip()
+    remote  = (data.get('remote')  or '').strip()
+    branch  = (data.get('branch')  or '').strip()
+    if not cwd:
+        return jsonify({"ok": False, "error": "缺少 cwd"}), 400
+    ok, out = agent_git.push(cwd, remote=remote, branch=branch)
+    return jsonify({"ok": ok, "output": out})
+
+
 def subprocess_run_git(cwd, *args):
     """包装 subprocess.run 给上面的 stage(-A) 用。"""
     import subprocess
