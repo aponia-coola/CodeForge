@@ -1855,6 +1855,35 @@
   loadAgentState();
   loadDiffList();        // diff viewer 初始为空列表(后端清空状态)
 
+  // ============ 主题切换 ============
+  const THEME_KEY = 'codeforge.theme';
+  const themeSwitch = document.getElementById('theme-switch');
+  function applyTheme(name) {
+    document.documentElement.classList.remove('theme-light', 'theme-blue');
+    if (name === 'light') document.documentElement.classList.add('theme-light');
+    else if (name === 'blue') document.documentElement.classList.add('theme-blue');
+    // 'dark' 就是默认 :root,不加类
+    try { localStorage.setItem(THEME_KEY, name); } catch (e) {}
+    // 同步按钮 active 态
+    if (themeSwitch) {
+      themeSwitch.querySelectorAll('.theme-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.theme === name);
+      });
+    }
+  }
+  if (themeSwitch) {
+    themeSwitch.addEventListener('click', e => {
+      const btn = e.target.closest('.theme-btn');
+      if (!btn) return;
+      applyTheme(btn.dataset.theme);
+    });
+    // 初始化:localStorage > 默认 dark
+    let saved = 'dark';
+    try { saved = localStorage.getItem(THEME_KEY) || 'dark'; } catch (e) {}
+    if (!['dark', 'light', 'blue'].includes(saved)) saved = 'dark';
+    applyTheme(saved);
+  }
+
   // ── 恢复上次的工作目录(localStorage) ──
   // 失败(目录被删/无权限)时 openFolder 会清掉过期缓存
   function initExplorer() {

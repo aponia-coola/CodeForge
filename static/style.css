@@ -45,6 +45,54 @@
   --shadow-glow:   0 0 0 3px rgba(139, 92, 246, .25);
 }
 
+/* ===== 主题变体(覆盖 :root 变量) ===== */
+/* 白天模式 */
+:root.theme-light {
+  --bg-base:       #fafafa;
+  --bg-panel:      #ffffff;
+  --bg-elevated:   #f0f0f0;
+  --bg-hover:      #ececec;
+  --bg-active:     #e0e0e0;
+  --bg-input:      #ffffff;
+  --bg-topbar:     linear-gradient(180deg, #f5f5f5 0%, #ebebeb 100%);
+
+  --border:        #d4d4d4;
+  --border-strong: #c0c0c0;
+  --border-soft:   #e8e8e8;
+
+  --text:          #2a2a2a;
+  --text-strong:   #000000;
+  --text-muted:    #6a6a6a;
+  --text-dim:      #9a9a9a;
+
+  --shadow-sm:     0 1px 2px rgba(0, 0, 0, .08);
+  --shadow-md:     0 4px 12px rgba(0, 0, 0, .10);
+}
+
+/* 深蓝模式(深色变体,以蓝为主调) */
+:root.theme-blue {
+  --bg-base:       #0e1a2b;
+  --bg-panel:      #152238;
+  --bg-elevated:   #1c2c46;
+  --bg-hover:      #1f3252;
+  --bg-active:     #243a5e;
+  --bg-input:      #0e1a2b;
+  --bg-topbar:     linear-gradient(180deg, #1c2c46 0%, #152238 100%);
+
+  --border:        #2a3a5a;
+  --border-strong: #355080;
+  --border-soft:   #1f2a44;
+
+  --text:          #c8d4e8;
+  --text-strong:   #ffffff;
+  --text-muted:    #8ea0c0;
+  --text-dim:      #6b7e9e;
+
+  --c-blue:        #6fb3f0;
+  --c-purple:      #7c9ef5;
+  --c-purple-soft: #a3b9f5;
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
 
@@ -70,7 +118,20 @@ body {
   color: var(--text);
   font-size: 13px;
   user-select: none;
+  /* 主题切换时给个柔和过渡 */
+  transition: background-color .25s ease, color .25s ease;
   -webkit-font-smoothing: antialiased;
+}
+/* 主题过渡:对用到主题变量的元素(背景/边框/色)统一淡入 */
+.main, .topbar, .sidebar, .sidebar-icons, .right, .center,
+.ai-panel, .ai-header, .ai-messages, .ai-input-wrap,
+.explorer, .explorer-path, .explorer-list, .diff-viewer,
+.diff-tabs, .diff-body, .terminal, .term-tabs, .term-body,
+.editor, .editor-header, .theme-switch, .msg-bubble,
+.msg-tool, .msg-tool-result, .pending-card, .ai-actions,
+.kbd {
+  transition: background-color .25s ease, color .25s ease,
+              border-color .25s ease;
 }
 
 /* ===================== 顶栏 ===================== */
@@ -119,6 +180,39 @@ body {
   color: var(--text);
   letter-spacing: 0.2px;
   font-weight: 500;
+}
+
+/* 顶栏右侧的主题切换 */
+.theme-switch {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 2px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 2px;
+}
+.theme-btn {
+  border: none;
+  background: transparent;
+  width: 24px; height: 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.theme-btn:hover { color: var(--text); background: rgba(255,255,255,.06); }
+.theme-btn.active {
+  background: var(--c-purple);
+  color: #fff;
 }
 .quick-open {
   position: absolute;
