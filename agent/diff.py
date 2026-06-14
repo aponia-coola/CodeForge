@@ -10,7 +10,7 @@ from typing import Optional
 from explorer import file as _file
 
 
-_DIFFS: dict[str, dict] = {}   # path -> {"old": str|None, "new": str|None, "op": "create|edit|remove"}
+_DIFFS: dict[str, dict] = {}
 
 
 def _read_safe(path: str) -> Optional[str]:
