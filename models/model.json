@@ -1,9 +1,36 @@
 {
   "current_model": "MiniMax-M3",
-  "base_url": "https://api.minimaxi.com/v1",
   "models": [
-    {"id": "MiniMax-M3", "name": "MiniMax-M3"},
-    {"id": "deepseek-v4-pro",   "name": "DeepSeek V4 Pro"},
-    {"id": "glm-4.7flash",      "name": "GLM 4.7 Flash"}
-  ]
+    {
+      "id": "MiniMax-M3",
+      "name": "MiniMax-M3",
+      "vendor": "MiniMax",
+      "apiKey": "sk-cp-QRz1k081mNqMN6TOb9NIjdx_SlpsokoIDxxDJOM2e0srlmD1F_w0Xj5D2Ymhd7Cwsz0NPHEac3u0Q0BO0H3o1EdJEOwgtRU6XlhCptamUcqb4r2npgtF74s",
+      "url": "https://api.minimaxi.com/v1/chat/completions",
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 8192,
+      "supportsToolCall": true
+    },
+    {
+      "id": "deepseek-v4-pro",
+      "name": "DeepSeek V4 Pro",
+      "vendor": "DeepSeek",
+      "apiKey": "sk-REPLACE-WITH-YOUR-DEEPSEEK-KEY",
+      "url": "https://api.deepseek.com/v1/chat/completions",
+      "maxInputTokens": 128000,
+      "maxOutputTokens": 8192,
+      "supportsToolCall": true
+    },
+    {
+      "id": "glm-4.7flash",
+      "name": "GLM 4.7 Flash",
+      "vendor": "Zhipu",
+      "apiKey": "sk-REPLACE-WITH-YOUR-GLM-KEY",
+      "url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+      "maxInputTokens": 128000,
+      "maxOutputTokens": 8192,
+      "supportsToolCall": true
+    }
+  ],
+  "availableModels": ["MiniMax-M3", "deepseek-v4-pro", "glm-4.7flash"]
 }

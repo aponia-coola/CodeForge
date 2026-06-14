@@ -67,6 +67,11 @@
 
       const isCollapsed = panel.classList.toggle('collapsed');
       icon.classList.toggle('active', !isCollapsed);
+      // 折叠时清掉拖拽留下的内联 width,避免 .collapsed { width:0 } 被覆盖
+      if (isCollapsed) panel.style.width = '';
+      // 同步手柄的显隐
+      const handle = document.querySelector(`.resize-handle[data-target="${icon.dataset.target}"]`);
+      if (handle) handle.style.display = isCollapsed ? 'none' : '';
     });
   });
 
@@ -279,6 +284,7 @@
   // 简单 name+size 签名做 diff,变了就替换对应 .explorer-list 的 DOM。
   const WATCH_INTERVAL_MS = 2500;
   const treeSignature = new Map();   // path -> "D:foo|F:bar.txt:42|..." 字符串签名
+  const inflightPoll  = new Map();   // path -> AbortController(同一路径新一轮会中止上一轮)
   let watcherTimer = null;
 
   function computeSignature(tree) {
@@ -292,9 +298,15 @@
 
   function pollPath(path) {
     if (!path) return Promise.resolve(false);
-    return fetch(`/api/folder?path=${encodeURIComponent(path)}&_t=${Date.now()}`)
+    // 同一路径已有请求在飞,先中止(避免旧响应覆盖新响应,也避免 ERR_ABORTED 噪声)
+    const prev = inflightPoll.get(path);
+    if (prev) prev.abort();
+    const ctrl = new AbortController();
+    inflightPoll.set(path, ctrl);
+    return fetch(`/api/folder?path=${encodeURIComponent(path)}&_t=${Date.now()}`, { signal: ctrl.signal })
       .then(r => r.json())
       .then(d => {
+        if (ctrl.signal.aborted) return false;
         if (!d || !d.ok || !d.tree) return false;
         const sig = computeSignature(d.tree);
         const old = treeSignature.get(path);
@@ -303,7 +315,14 @@
         replaceListInDom(path, d.tree);
         return true;
       })
-      .catch(() => false);
+      .catch(err => {
+        // 中止是被我们自己触发的,静默忽略;其他错误也保持静默(轮询不应阻塞 UI)
+        if (err && err.name === 'AbortError') return false;
+        return false;
+      })
+      .finally(() => {
+        if (inflightPoll.get(path) === ctrl) inflightPoll.delete(path);
+      });
   }
 
   function pollAll() {
@@ -1066,13 +1085,11 @@
 
   function appendToolCall(tc) {
     if (!aiMessages || !tc || !tc.function) return;
-    let args = {};
-    try { args = JSON.parse(tc.function.arguments || '{}'); } catch (e) { args = { _raw: tc.function.arguments }; }
     const div = document.createElement('div');
     div.className = 'msg msg-tool';
+    const toolName = tc.function.name || 'tool';
     div.innerHTML = `
-      <div class="msg-label">🔧 ${escapeHtml(tc.function.name || 'tool')}</div>
-      <div class="msg-bubble tool-bubble">${escapeHtml(JSON.stringify(args, null, 2))}</div>`;
+      <div class="msg-label">🔧 调用工具:<span class="tool-name"> ${escapeHtml(toolName)}</span></div>`;
     aiMessages.appendChild(div);
     scrollToBottom();
   }
@@ -1082,10 +1099,24 @@
     const div = document.createElement('div');
     div.className = 'msg msg-tool-result';
     const txt = (m.content || '').toString();
-    const trimmed = txt.length > 600 ? txt.slice(0, 600) + '\n…(已截断)' : txt;
+    // 判定成功/失败:尝试解析 JSON,看 ok / success / error 字段
+    let parsed = null;
+    try { parsed = JSON.parse(txt); } catch (e) { /* 非 JSON */ }
+    let status = '成功';
+    let statusClass = 'tool-status-ok';
+    if (parsed && typeof parsed === 'object') {
+      if (parsed.ok === false || parsed.success === false || parsed.error) {
+        status = '失败';
+        statusClass = 'tool-status-fail';
+      } else if (parsed.ok === true || parsed.success === true) {
+        status = '成功';
+      }
+    } else if (/^(error|err|fail|failed|exception)/i.test(txt.trim())) {
+      status = '失败';
+      statusClass = 'tool-status-fail';
+    }
     div.innerHTML = `
-      <div class="msg-label">↳ 结果</div>
-      <div class="msg-bubble tool-result-bubble">${escapeHtml(trimmed)}</div>`;
+      <div class="msg-label">↳ 结果:<span class="tool-status ${statusClass}"> ${status}</span></div>`;
     aiMessages.appendChild(div);
     scrollToBottom();
   }
@@ -1344,6 +1375,15 @@
       }
     });
   }
+  // 收起/展开终端
+  const termCollapse = document.getElementById('term-collapse');
+  const terminalEl = document.querySelector('.terminal');
+  if (termCollapse && terminalEl) {
+    termCollapse.addEventListener('click', () => {
+      const collapsed = terminalEl.classList.toggle('collapsed');
+      termCollapse.title = collapsed ? '展开终端' : '收起终端';
+    });
+  }
   if (pendingReject) {
     pendingReject.addEventListener('click', () => {
       fetch('/api/agent/pending/reject', { method: 'POST' })
@@ -1377,4 +1417,39 @@
     // 没缓存 → 保持空状态 UI(等用户主动打开)
   }
   initExplorer();
+
+  // ============ 列宽拖拽手柄 ============
+  // 拖动 .resize-handle 改变相邻列的宽度(支持 .sidebar 和 .right)
+  const MIN_WIDTHS = { '.sidebar': 160, '.right': 220 };
+  document.querySelectorAll('.resize-handle').forEach(handle => {
+    const sel = handle.dataset.target;
+    const direction = handle.dataset.direction; // "left" → 拖右增宽;"right" → 拖左增宽
+    const panel = document.querySelector(sel);
+    if (!panel) return;
+    handle.addEventListener('mousedown', e => {
+      e.preventDefault();
+      if (panel.classList.contains('collapsed')) return;
+      const startX = e.clientX;
+      const startWidth = panel.getBoundingClientRect().width;
+      const min = MIN_WIDTHS[sel] || 120;
+      const max = Math.min(window.innerWidth * 0.6, 800);
+      handle.classList.add('dragging');
+      document.body.classList.add('resizing');
+      const onMove = ev => {
+        const dx = ev.clientX - startX;
+        // 左侧面板:向右拖 = 增宽;右侧面板:向左拖 = 增宽
+        const sign = direction === 'right' ? -1 : 1;
+        const next = Math.max(min, Math.min(max, startWidth + dx * sign));
+        panel.style.width = next + 'px';
+      };
+      const onUp = () => {
+        handle.classList.remove('dragging');
+        document.body.classList.remove('resizing');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
 })();

@@ -1,19 +1,102 @@
 import json
 import os
+import re
 from pathlib import Path
 from openai import OpenAI
 
 _CONFIG_PATH = Path(__file__).resolve().parent / "model.json"
 _CONFIG: dict = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
-_CURRENT_MODEL: str = _CONFIG["current_model"]
-_BASE_URL: str = _CONFIG["base_url"]
-_MODELS: list[dict] = list(_CONFIG.get("models", []))
+
+# ===== CodeBuddy 兼容 schema 解析 =====
+# 顶层结构(参考 ~/.codebuddy/models.json):
+#   models: [{ id, name, vendor, apiKey, url, maxInputTokens, maxOutputTokens,
+#             supportsToolCall, supportsImages, supportsReasoning }, ...]
+#   availableModels: ["id1", "id2", ...]   # 可选白名单
+#   current_model: "..."                   # 顶层字段(本地扩展,CodeBuddy 会忽略)
 
 
-_client = OpenAI(
-    api_key="sk-cp-QRz1k081mNqMN6TOb9NIjdx_SlpsokoIDxxDJOM2e0srlmD1F_w0Xj5D2Ymhd7Cwsz0NPHEac3u0Q0BO0H3o1EdJEOwgtRU6XlhCptamUcqb4r2npgtF74s",
-    base_url=_BASE_URL,
-)
+def _strip_chat_completions(url: str) -> str:
+    """url 形如 https://host/v1/chat/completions → OpenAI 需要 base_url=https://host/v1"""
+    if not url:
+        return url
+    return re.sub(r"/chat/completions/?$", "", url.rstrip("/"))
+
+
+def _parse_config(cfg: dict) -> dict:
+    """
+    把 CodeBuddy 风格(或旧格式)配置归一化成内部状态。
+    Returns: {"current_model", "models": [...], "available": set|None}
+    """
+    models = list(cfg.get("models", []))
+    # 旧格式兼容:顶层 base_url + models 只有 id/name → 自动补 url/apiKey
+    legacy_base = cfg.get("base_url")
+    legacy_key = cfg.get("api_key")
+    for m in models:
+        if "url" not in m and legacy_base:
+            m["url"] = legacy_base.rstrip("/") + "/chat/completions"
+        if "apiKey" not in m and legacy_key:
+            m["apiKey"] = legacy_key
+    available = cfg.get("availableModels")
+    available_set = set(available) if isinstance(available, list) and available else None
+    current = cfg.get("current_model")
+    if not current:
+        if available:
+            current = available[0]
+        elif models:
+            current = models[0].get("id")
+    return {"current_model": current, "models": models, "available": available_set}
+
+
+_PARSED = _parse_config(_CONFIG)
+_CURRENT_MODEL: str = _PARSED["current_model"]
+_AVAILABLE = _PARSED["available"]
+
+
+def _find_model(model_id: str) -> dict | None:
+    for m in _PARSED["models"]:
+        if m.get("id") == model_id:
+            return m
+    return None
+
+
+def _current_base_url() -> str:
+    m = _find_model(_CURRENT_MODEL)
+    if m and m.get("url"):
+        return _strip_chat_completions(m["url"])
+    return _CONFIG.get("base_url", "") or ""
+
+
+def _current_api_key() -> str:
+    m = _find_model(_CURRENT_MODEL)
+    if m:
+        return m.get("apiKey") or m.get("api_key") or ""
+    return _CONFIG.get("api_key", "") or ""
+
+
+_BASE_URL: str = _current_base_url()
+_API_KEY: str = _current_api_key()
+
+
+def _filtered_models() -> list[dict]:
+    """返回前端可见的模型简表 [{id, name}],遵守 availableModels 白名单。"""
+    out = []
+    for m in _PARSED["models"]:
+        if _AVAILABLE is not None and m.get("id") not in _AVAILABLE:
+            continue
+        out.append({"id": m.get("id", ""), "name": m.get("name") or m.get("id", "")})
+    return out
+
+
+_MODELS: list[dict] = _filtered_models()
+
+
+def _build_client() -> OpenAI:
+    return OpenAI(api_key=_API_KEY, base_url=_BASE_URL or None)
+
+
+_client: OpenAI = _build_client()
+
+
 def get_current_model() -> str:
     """返回当前生效的模型 id。"""
     return _CURRENT_MODEL
@@ -34,13 +117,19 @@ def get_models() -> list[dict]:
 
 def set_current_model(model_id: str) -> bool:
     """
-    热切换当前模型。仅在内存中改 _CURRENT_MODEL,不动文件。
-    Returns: 切换成功返回 True,id 不存在返回 False。
+    热切换当前模型。会同步重建 OpenAI client(不同模型可能 base_url/apiKey 不同)。
+    Returns: 切换成功返回 True,id 不存在或在白名单外返回 False。
     """
-    global _CURRENT_MODEL
-    if not any(m.get("id") == model_id for m in _MODELS):
+    global _CURRENT_MODEL, _BASE_URL, _API_KEY, _client
+    m = _find_model(model_id)
+    if not m:
+        return False
+    if _AVAILABLE is not None and model_id not in _AVAILABLE:
         return False
     _CURRENT_MODEL = model_id
+    _BASE_URL = _strip_chat_completions(m.get("url", "")) or _BASE_URL
+    _API_KEY = m.get("apiKey") or m.get("api_key") or _API_KEY
+    _client = _build_client()
     return True
 
 
@@ -52,12 +141,16 @@ def reload_config(config_path: str | os.PathLike | None = None) -> dict:
     Returns:
         切换后生效的完整配置 {"current_model": ..., "base_url": ..., "models": [...]}
     """
-    global _CONFIG, _CURRENT_MODEL, _BASE_URL, _MODELS
+    global _CONFIG, _PARSED, _CURRENT_MODEL, _AVAILABLE, _BASE_URL, _API_KEY, _MODELS, _client
     path = Path(config_path) if config_path else _CONFIG_PATH
     _CONFIG = json.loads(path.read_text(encoding="utf-8"))
-    _CURRENT_MODEL = _CONFIG["current_model"]
-    _BASE_URL = _CONFIG["base_url"]
-    _MODELS = list(_CONFIG.get("models", []))
+    _PARSED = _parse_config(_CONFIG)
+    _CURRENT_MODEL = _PARSED["current_model"]
+    _AVAILABLE = _PARSED["available"]
+    _BASE_URL = _current_base_url()
+    _API_KEY = _current_api_key()
+    _MODELS = _filtered_models()
+    _client = _build_client()
     return {
         "current_model": _CURRENT_MODEL,
         "base_url": _BASE_URL,

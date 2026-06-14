@@ -173,7 +173,6 @@ body {
   overflow-y: auto;
   flex-shrink: 0;
   position: relative;            /* 为底栏绝对定位提供锚点 */
-  transition: width 0.2s var(--t-med), border-color 0.2s var(--t-med);
 }
 .sidebar.collapsed {
   width: 0;
@@ -494,11 +493,36 @@ body {
   flex-direction: column;
   flex-shrink: 0;
   overflow: hidden;
-  transition: width 0.2s var(--t-med), border-color 0.2s var(--t-med);
 }
 .right.collapsed {
   width: 0;
   border-left-color: transparent;
+}
+
+/* ===== 列宽拖拽手柄 ===== */
+.resize-handle {
+  width: 4px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  z-index: 5;
+}
+.resize-handle::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: transparent;
+  transition: background var(--t-fast);
+}
+.resize-handle:hover::before,
+.resize-handle.dragging::before {
+  background: var(--c-blue);
+  opacity: 0.6;
+}
+body.resizing, body.resizing * {
+  cursor: col-resize !important;
+  user-select: none;
 }
 
 /* AI 助手 */
@@ -792,6 +816,11 @@ body {
   line-height: 1.6;
   overflow-y: auto;
 }
+.terminal.collapsed { height: auto; }
+.terminal.collapsed .term-body { display: none; }
+.terminal.collapsed .term-tabs { border-bottom: none; }
+#term-collapse svg { transition: transform var(--t-fast); }
+.terminal.collapsed #term-collapse svg { transform: rotate(180deg); }
 .term-prompt { color: var(--text-dim); }
 .term-cursor {
   display: inline-block;
@@ -1255,6 +1284,26 @@ body {
   max-height: 200px;
   overflow: auto;
 }
+.tool-name {
+  color: var(--c-blue);
+  font-weight: 600;
+  font-family: "SF Mono", Consolas, monospace;
+}
+.tool-status {
+  font-weight: 600;
+  margin-left: 4px;
+}
+.tool-status-ok   { color: var(--c-green, #4caf50); }
+.tool-status-fail { color: var(--c-red,   #f44336); }
+.tool-kv {
+  display: inline-block;
+  margin-right: 10px;
+  color: var(--text);
+  font-family: "SF Mono", Consolas, monospace;
+  font-size: 11px;
+}
+.tool-kv b { color: var(--c-purple); font-weight: 600; margin-right: 2px; }
+.tool-empty { color: var(--text-muted); font-style: italic; }
 
 .msg-loading .msg-bubble {
   display: inline-flex;
