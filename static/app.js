@@ -65,6 +65,13 @@
       const target = icon.dataset.target;
       // SCM 是 sidebar 内部的视图切换(显示/隐藏 explorer 与 scm-view),不走折叠
       if (target === '.scm-view') {
+        // 先确保 sidebar 是展开的(若之前被 Ctrl+B 折叠过,先展开)
+        const sidebar = document.querySelector('.sidebar');
+        if (sidebar && sidebar.classList.contains('collapsed')) {
+          sidebar.classList.remove('collapsed');
+          sidebar.style.width = '';
+          document.querySelector('.sidebar-icons [data-target=".sidebar"]')?.classList.add('active');
+        }
         icon.classList.add('active');
         document.querySelector('.sidebar-icons [data-target=".sidebar"]')?.classList.remove('active');
         switchSidebarView('scm');
