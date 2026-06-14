@@ -75,7 +75,7 @@
             <path d="M2 5a2 2 0 012-2h3l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V5z"/>
           </svg>
         </span>
-        <span title="新建文件">
+        <span title="新建文件" data-action="create-file">
           <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
             <path d="M8 3v10M3 8h10"/>
           </svg>
@@ -124,16 +124,22 @@
   <!-- 左侧文件树宽度拖拽手柄 -->
   <div class="resize-handle" data-target=".sidebar" data-direction="left" title="拖动调整宽度"></div>
 
-  <!-- 中间空状态 -->
+  <!-- 中间:diff viewer / 主页 -->
   <div class="center">
-    <div class="center-icon">&lt;/&gt;</div>
-    <div class="center-title">CodeForge</div>
-    <div class="center-sub">AI 驱动的网页编码工作台</div>
-    <div class="shortcuts">
-      <div class="shortcut-row"><span class="kbd">Ctrl+P</span> 快速打开</div>
-      <div class="shortcut-row"><span class="kbd">Ctrl+Shift+P</span> 命令面板</div>
-      <div class="shortcut-row"><span class="kbd">Ctrl+J</span> 切换 Agent 栏</div>
-      <div class="shortcut-row"><span class="kbd">Ctrl+B</span> 切换资源管理器</div>
+    <div class="center-welcome" id="center-welcome">
+      <div class="center-icon">&lt;/&gt;</div>
+      <div class="center-title">CodeForge</div>
+      <div class="center-sub">AI 驱动的网页编码工作台</div>
+      <div class="shortcuts">
+        <div class="shortcut-row"><span class="kbd">Ctrl+P</span> 快速打开</div>
+        <div class="shortcut-row"><span class="kbd">Ctrl+Shift+P</span> 命令面板</div>
+        <div class="shortcut-row"><span class="kbd">Ctrl+J</span> 切换 Agent 栏</div>
+        <div class="shortcut-row"><span class="kbd">Ctrl+B</span> 切换资源管理器</div>
+      </div>
+    </div>
+    <div class="diff-viewer" id="diff-viewer" style="display:none;">
+      <div class="diff-tabs" id="diff-tabs"></div>
+      <div class="diff-body"  id="diff-body"></div>
     </div>
   </div>
 

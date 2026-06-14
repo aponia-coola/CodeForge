@@ -48,6 +48,21 @@
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
 
+/* ===== 全局滚动条:细 + 圆角 + 暗色 ===== */
+* {
+  scrollbar-width: thin;                                       /* Firefox */
+  scrollbar-color: rgba(255,255,255,.18) transparent;           /* Firefox */
+}
+*::-webkit-scrollbar           { width: 8px; height: 8px; }     /* WebKit */
+*::-webkit-scrollbar-track     { background: transparent; }
+*::-webkit-scrollbar-thumb     {
+  background: rgba(255,255,255,.15);
+  border-radius: 4px;
+  transition: background var(--t-fast);
+}
+*::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,.30); }
+*::-webkit-scrollbar-corner    { background: transparent; }
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
                "PingFang SC", "Microsoft YaHei", Roboto, sans-serif;
@@ -283,19 +298,36 @@ body {
 .file-icon.git  { color: var(--c-red);    background: rgba(241,78,78,.12); }
 .file-icon.cfg  { color: var(--text-muted); background: rgba(150,150,150,.12); }
 
-/* ===== 中间空状态 ===== */
+/* ===== 中间区域(diff viewer 或主页) ===== */
 .center {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
   background:
     radial-gradient(ellipse at center, rgba(139, 92, 246, .04) 0%, transparent 60%),
     var(--bg-base);
   padding: 20px;
-  position: relative;
-  overflow: hidden;
+}
+/* diff viewer 时(.center 加了 .diff-mode):撑满 + 装饰关掉 */
+.center.diff-mode {
+  align-items: stretch;
+  justify-content: flex-start;
+  padding: 0;
+  background: var(--bg-base);
+}
+.center.diff-mode::before { display: none; }
+
+/* 主页容器:自身居中(因为 .center 是 column flex,子元素宽度=内容宽度,align-items:center 只把它居中,内部还要自己再居中) */
+.center-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0;
 }
 .center::before {
   content: "";
@@ -401,6 +433,12 @@ body {
 }
 .editor-cm-host .CodeMirror-scroll { min-height: 0; }
 
+/* 隐藏 CodeMirror 自带的滚动条,用浏览器原生滚动条(下面统一样式) */
+.CodeMirror-vscrollbar,
+.CodeMirror-hscrollbar,
+.CodeMirror-scrollbar-filler,
+.CodeMirror-gutter-filler { display: none !important; }
+
 /* 状态文字(默认 / 未保存 / 已保存) */
 .editor-status {
   font-size: 11px;
@@ -495,6 +533,128 @@ body {
   text-align: center;
   box-shadow: 0 1px 0 var(--border-strong), inset 0 -1px 0 var(--bg-panel);
 }
+
+/* ===== Diff Viewer ===== */
+.diff-viewer {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+  background: var(--bg-base);
+}
+.diff-tabs {
+  display: flex;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--bg-panel);
+  min-height: 36px;
+}
+.diff-tabs::-webkit-scrollbar { height: 0; }
+.diff-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-right: 1px solid var(--border-soft);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--t-fast), color var(--t-fast);
+  border-top: 2px solid transparent;
+}
+.diff-tab:hover { background: var(--bg-hover); color: var(--text); }
+.diff-tab.active {
+  background: var(--bg-base);
+  color: var(--text);
+  border-top-color: var(--c-purple);
+}
+.diff-tab .diff-tab-icon {
+  font-family: "SF Mono", Consolas, monospace;
+  font-weight: 700;
+  font-size: 11px;
+}
+.diff-tab .diff-tab-op {
+  font-size: 9px;
+  padding: 1px 4px;
+  border-radius: 2px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+.diff-tab.op-create .diff-tab-op { background: rgba(76,175,80,.18);  color: #4caf50; }
+.diff-tab.op-edit  .diff-tab-op { background: rgba(33,150,243,.18); color: #2196f3; }
+.diff-tab.op-remove .diff-tab-op { background: rgba(244,67,54,.18); color: #f44336; }
+.diff-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px; height: 16px;
+  margin-left: 4px;
+  border-radius: 3px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity var(--t-fast), background var(--t-fast), color var(--t-fast);
+}
+.diff-tab:hover .diff-tab-close,
+.diff-tab.active .diff-tab-close { opacity: 1; }
+.diff-tab-close:hover {
+  background: var(--bg-hover);
+  color: var(--c-red, #f44336);
+}
+
+.diff-body {
+  flex: 1;
+  overflow: auto;
+  font-family: "SF Mono", Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  background: var(--bg-base);
+}
+.diff-line {
+  display: flex;
+  padding: 0 14px;
+  white-space: pre;
+  min-height: 20px;
+}
+.diff-line .diff-gutter {
+  flex-shrink: 0;
+  width: 22px;
+  color: var(--text-muted);
+  text-align: center;
+  user-select: none;
+  opacity: 0.7;
+}
+.diff-line .diff-text { flex: 1; }
+.diff-line.add {
+  background: rgba(76,175,80,.12);
+  color: #b6e2b6;
+}
+.diff-line.add .diff-gutter { color: #4caf50; }
+.diff-line.del {
+  background: rgba(244,67,54,.12);
+  color: #f4b6b0;
+}
+.diff-line.del .diff-gutter { color: #f44336; }
+.diff-line.hunk {
+  background: rgba(33,150,243,.08);
+  color: var(--c-blue);
+  font-weight: 600;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.diff-line.meta {
+  color: var(--text-muted);
+  font-size: 11px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.diff-line.ctx { color: var(--text); opacity: 0.85; }
 
 /* ===== 右侧栏 ===== */
 .right {
@@ -1409,6 +1569,45 @@ body.resizing, body.resizing * {
   border-radius: 3px;
   background: var(--bg-base);
   border: 1px solid var(--border-soft);
+}
+.msg-status-done {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+}
+.msg-status-done .msg-status-text {
+  font-style: normal;
+  color: var(--c-green, #4caf50);
+  border-color: rgba(76,175,80,.4);
+  background: rgba(76,175,80,.06);
+}
+.msg-status-action {
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  padding: 3px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--c-purple);
+  background: rgba(139,92,246,.12);
+  color: var(--c-purple);
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.msg-status-action:hover {
+  background: var(--c-purple);
+  color: #fff;
+}
+
+/* 来自聊天里"查看更改"的提示:tab 栏闪一下 */
+.diff-tabs.flash {
+  animation: tabs-flash 0.9s ease-out 1;
+}
+@keyframes tabs-flash {
+  0%   { background: var(--bg-panel); }
+  20%  { background: rgba(139,92,246,.35); }
+  100% { background: var(--bg-panel); }
 }
 
 .msg-code {

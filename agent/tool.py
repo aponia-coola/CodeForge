@@ -9,7 +9,7 @@ import json
 import os
 from typing import Callable
 
-from agent import state
+from agent import state, diff as agent_diff
 from explorer import file
 
 
@@ -166,9 +166,11 @@ def _create_file(file_path: str, content: str = "", auto: bool = True) -> str:
         return json.dumps({"status": "pending_approval", **pending}, ensure_ascii=False)
     if os.path.exists(file_path):
         raise FileExistsError(f"文件已存在,禁止覆盖: {file_path}。如需修改请用 edit_file")
+    agent_diff.snapshot_before(file_path)
     file.create(file_path)
     if content:
         file.change(file_path, content, mode='append')
+    agent_diff.snapshot_after(file_path, "create")
     return f"已创建 {file_path}({len(content)} chars)"
 
 
@@ -197,7 +199,9 @@ def _edit_file(file_path: str, content: str, mode: str = "edit", position: int |
         pending = {"action": "edit_file", "args": {"file_path": file_path, "content": content, "mode": mode, "position": position, "end_line": end_line}}
         state.set_pending(pending)
         return json.dumps({"status": "pending_approval", **pending}, ensure_ascii=False)
+    agent_diff.snapshot_before(file_path)
     file.change(file_path, content, mode=mode, position=position, end_line=end_line)
+    agent_diff.snapshot_after(file_path, "edit")
     return f"已修改 {file_path}({mode} 模式,{len(content)} chars)"
 
 
@@ -218,7 +222,9 @@ def _remove_file_tool(file_path: str, auto: bool = True) -> str:
         pending = {"action": "remove_file", "args": {"file_path": file_path}}
         state.set_pending(pending)
         return json.dumps({"status": "pending_approval", **pending}, ensure_ascii=False)
+    agent_diff.snapshot_before(file_path)
     file.remove_file(file_path)
+    agent_diff.snapshot_after(file_path, "remove")
     return f"已删除 {file_path}"
 
 

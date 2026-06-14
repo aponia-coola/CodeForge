@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from agent import state, tool
+from agent import state, tool, diff
 from models.request import request as model_request
 
 
@@ -227,6 +227,12 @@ def run_stream(
                     "content": result,
                 }
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+                # 文件类工具完成 → 推送 diff 更新,前端实时刷新 diff viewer
+                if call.function.name in {"create_file", "edit_file", "remove_file"}:
+                    yield {
+                        "event": "diff_updated",
+                        "files": diff.list_pending(),
+                    }
                 # 任一工具触发 pending → 整轮停下
                 if state.get_pending() is not None:
                     pending = state.get_pending()

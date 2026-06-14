@@ -554,6 +554,135 @@
     if (retry) retry.addEventListener('click', () => openFolder());
   }
 
+  // ──────── Diff Viewer ────────
+  const diffViewerEl = document.getElementById('diff-viewer');
+  const diffTabsEl   = document.getElementById('diff-tabs');
+  const diffBodyEl   = document.getElementById('diff-body');
+  const welcomeEl    = document.getElementById('center-welcome');
+  const centerEl     = document.querySelector('.center');
+  let diffFiles   = [];           // [{path, name, op}]
+  let diffActive  = null;         // 当前选中的 path
+
+  const _EXT_ICON = {
+    py: '🐍', pyw: '🐍',
+    js: 'JS', mjs: 'JS', jsx: 'JS', ts: 'TS', tsx: 'TS',
+    json: '{}', jsonc: '{}',
+    html: '<>', htm: '<>',
+    css: '#', scss: '#', less: '#',
+    md: 'M↓', markdown: 'M↓',
+    txt: '📄', log: '📄',
+    yml: 'Y↓', yaml: 'Y↓',
+    sh: '$_', bash: '$_', zsh: '$_',
+  };
+  function _fileIcon(name) {
+    const ext = (name.split('.').pop() || '').toLowerCase();
+    return _EXT_ICON[ext] || '📄';
+  }
+
+  async function loadDiffList() {
+    try {
+      const r = await fetch('/api/diffs');
+      const d = await r.json();
+      if (d.ok) setDiffFiles(d.files || []);
+    } catch (e) { /* 静默 */ }
+  }
+
+  function setDiffFiles(files) {
+    diffFiles = files;
+    if (diffActive && !files.find(f => f.path === diffActive)) {
+      diffActive = files.length ? files[0].path : null;
+    } else if (!diffActive && files.length) {
+      diffActive = files[0].path;
+    } else if (files.length === 0) {
+      diffActive = null;
+    }
+    renderDiffTabs();
+    if (diffActive) loadDiff(diffActive);
+    else renderDiffBodyEmpty();
+  }
+
+  function renderDiffTabs() {
+    if (!diffTabsEl) return;
+    diffTabsEl.innerHTML = '';
+    const hasFiles = diffFiles.length > 0;
+    // 切显示:有改动 → 显示 diff viewer;没有 → 显示主页
+    if (diffViewerEl) diffViewerEl.style.display = hasFiles ? '' : 'none';
+    if (welcomeEl)    welcomeEl.style.display    = hasFiles ? 'none' : '';
+    if (centerEl)     centerEl.classList.toggle('diff-mode', hasFiles);
+    for (const f of diffFiles) {
+      const tab = document.createElement('div');
+      tab.className = 'diff-tab op-' + f.op + (f.path === diffActive ? ' active' : '');
+      tab.dataset.path = f.path;
+
+      const name = document.createElement('span');
+      name.className = 'diff-tab-name';
+      name.innerHTML =
+        `<span class="diff-tab-icon">${escapeHtml(_fileIcon(f.name))}</span>` +
+        escapeHtml(f.name) +
+        `<span class="diff-tab-op">${f.op === 'create' ? 'NEW' : f.op === 'remove' ? 'DEL' : 'EDIT'}</span>`;
+
+      const close = document.createElement('span');
+      close.className = 'diff-tab-close';
+      close.title = '从视图中移除(后端仍保留)';
+      close.textContent = '×';
+      close.addEventListener('click', e => {
+        e.stopPropagation();
+        hideDiff(f.path);
+      });
+
+      tab.appendChild(name);
+      tab.appendChild(close);
+      tab.addEventListener('click', () => {
+        diffActive = f.path;
+        renderDiffTabs();
+        loadDiff(f.path);
+      });
+      diffTabsEl.appendChild(tab);
+    }
+  }
+
+  // 关闭单个 diff 的视图(后端数据不动,下次"查看更改"会重新拉回来)
+  function hideDiff(path) {
+    const next = diffFiles.filter(f => f.path !== path);
+    setDiffFiles(next);
+  }
+
+  async function loadDiff(path) {
+    if (!diffBodyEl) return;
+    diffBodyEl.innerHTML = '';
+    try {
+      const r = await fetch('/api/diff?path=' + encodeURIComponent(path));
+      const d = await r.json();
+      if (!d.ok) {
+        diffBodyEl.innerHTML = `<div class="diff-line meta">⚠ ${escapeHtml(d.error || '无 diff')}</div>`;
+        return;
+      }
+      for (const ln of d.lines || []) {
+        const row = document.createElement('div');
+        row.className = 'diff-line ' + ln.type;
+        let gutter = ' ';
+        if (ln.type === 'add') gutter = '+';
+        else if (ln.type === 'del') gutter = '−';
+        else if (ln.type === 'hunk') gutter = '@';
+        row.innerHTML =
+          `<span class="diff-gutter">${gutter}</span>` +
+          `<span class="diff-text">${escapeHtml(ln.text)}</span>`;
+        diffBodyEl.appendChild(row);
+      }
+      // 没行时给个提示
+      if (!(d.lines || []).length) {
+        diffBodyEl.innerHTML = `<div class="diff-line meta">(无变化)</div>`;
+      }
+    } catch (e) {
+      diffBodyEl.innerHTML = `<div class="diff-line meta">⚠ 加载失败:${escapeHtml(String(e))}</div>`;
+    }
+  }
+
+  function renderDiffBodyEmpty() {
+    if (!diffBodyEl) return;
+    diffBodyEl.innerHTML = '';
+  }
+
   function renderTree(tree, asRoot) {
     if (!explorer) return;
     if (asRoot) {
@@ -788,6 +917,7 @@
       autoCloseTags: true,
       foldGutter: true,
       gutters: ['CodeMirror-linenumbers', 'CodeMirror-foldgutter'],
+      scrollbarStyle: 'native',   // 用浏览器原生滚动条,样式由全局 ::-webkit-scrollbar 统一控制
       extraKeys: {
         'Ctrl-S': () => saveCurrentFile(),
         'Cmd-S':  () => saveCurrentFile(),
@@ -1166,6 +1296,35 @@
     return div;
   }
 
+  // 完成状态行:一行小字 + 一个"查看更改"按钮,点击聚焦 diff viewer
+  function appendCompleteStatus(fileCount) {
+    if (!aiMessages) return null;
+    const div = document.createElement('div');
+    div.className = 'msg msg-status msg-status-done';
+    const fileLabel = fileCount > 0 ? `共修改 ${fileCount} 个文件` : '没有文件改动';
+    div.innerHTML =
+      `<span class="msg-status-text">✓ 运行完成 · ${escapeHtml(fileLabel)}</span>` +
+      (fileCount > 0
+        ? `<button class="msg-status-action" id="msg-view-diff">查看更改</button>`
+        : '');
+    aiMessages.appendChild(div);
+    scrollToBottom();
+    const btn = div.querySelector('#msg-view-diff');
+    if (btn) btn.addEventListener('click', () => focusDiffViewer());
+    return div;
+  }
+
+  // 把视线拉到 diff viewer:重新拉后端列表(把之前隐藏的也带回来),滚动到顶 + tab 闪一下
+  async function focusDiffViewer() {
+    await loadDiffList();            // 后端 diff 列表(可能含被隐藏但未清的)
+    if (diffBodyEl) diffBodyEl.scrollTop = 0;
+    const tabs = diffTabsEl;
+    if (!tabs) return;
+    tabs.classList.remove('flash');
+    void tabs.offsetWidth;           // 强制 reflow,重新触发动画
+    tabs.classList.add('flash');
+  }
+
   function scrollToBottom() {
     if (!aiMessages) return;
     requestAnimationFrame(() => {
@@ -1230,6 +1389,8 @@
 
     // 跟踪当前 round/max,用来拼状态文字
     let roundNow = 0, roundMax = 0, lastTool = '';
+    // 本轮新增的 diff 数量(只数本轮新改的文件,不看历史累计)
+    let diffsThisTurn = 0;
 
     try {
       const resp = await fetch('/api/chat/stream', {
@@ -1290,6 +1451,10 @@
             insertBeforeLoading(loading, () => appendToolResultRaw(m));
           } else if (evName === 'pending') {
             setLoadingStatus(loading, '等待用户确认');
+          } else if (evName === 'diff_updated') {
+            diffsThisTurn++;
+            // 文件工具完成 → 刷新 diff viewer
+            setDiffFiles(evData.files || []);
           } else if (evName === 'done') {
             finalData = evData;
           } else if (evName === 'error') {
@@ -1335,6 +1500,8 @@
         appendStatus('⚠ 达到最大轮次,未收敛');
       } else {
         setAgentLight('idle');
+        // 完成行:用本轮新增的 diff 数(不累计旧值)
+        appendCompleteStatus(diffsThisTurn);
       }
     } catch (err) {
       if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
@@ -1686,6 +1853,7 @@
   // 启动时拉一次
   loadChat();
   loadAgentState();
+  loadDiffList();        // diff viewer 初始为空列表(后端清空状态)
 
   // ── 恢复上次的工作目录(localStorage) ──
   // 失败(目录被删/无权限)时 openFolder 会清掉过期缓存

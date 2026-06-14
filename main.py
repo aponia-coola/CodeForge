@@ -11,6 +11,7 @@ from models.request import (
 )
 from agent import state as agent_state
 from agent import loop as agent_loop
+from agent import diff as agent_diff
 
 app = Flask(__name__)
 
@@ -257,6 +258,37 @@ def api_chat_stream():
 def api_agent_state():
     """读取 agent 状态:plan_model / auto / pending。"""
     return jsonify({"ok": True, "state": agent_state.snapshot()})
+
+
+# ════════════════════════════════════════════════════════════
+#                      Diff 查看
+# ════════════════════════════════════════════════════════════
+
+@app.get('/api/diffs')
+def api_diffs():
+    """返回所有待展示的 diff 文件列表。"""
+    return jsonify({"ok": True, "files": agent_diff.list_pending()})
+
+
+@app.get('/api/diff')
+def api_diff():
+    """返回单个文件的 unified diff + 行级类型(add/del/hunk/meta/ctx)。"""
+    path = (flask_request.args.get('path') or '').strip()
+    if not path:
+        return jsonify({"ok": False, "error": "缺少 path"}), 400
+    d = agent_diff.get_diff(path)
+    if not d:
+        return jsonify({"ok": False, "error": "无 diff"}), 404
+    return jsonify({"ok": True, **d})
+
+
+@app.post('/api/diff/clear')
+def api_diff_clear():
+    """清空 diff(path=None 清全部)。Body: {"path": "..."} 或空"""
+    data = flask_request.get_json(silent=True) or {}
+    path = (data.get("path") or "").strip() or None
+    agent_diff.clear(path)
+    return jsonify({"ok": True, "files": agent_diff.list_pending()})
 
 
 @app.post('/api/agent/state')
