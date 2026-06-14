@@ -119,6 +119,21 @@
     });
   }
 
+  // ============ 顶栏状态灯 ============
+  // running → wc-max(绿) 高亮,带脉冲
+  // plan    → wc-min(橙) 高亮,带脉冲
+  // error   → wc-close(红) 高亮,带脉冲
+  // idle    → 全部熄灭
+  const _wcClose = document.querySelector('.wc-close');
+  const _wcMin   = document.querySelector('.wc-min');
+  const _wcMax   = document.querySelector('.wc-max');
+  function setAgentLight(state) {
+    [_wcClose, _wcMin, _wcMax].forEach(el => el && el.classList.remove('wc-active'));
+    if (state === 'running' && _wcMax)   _wcMax.classList.add('wc-active');
+    if (state === 'plan'     && _wcMin)   _wcMin.classList.add('wc-active');
+    if (state === 'error'    && _wcClose) _wcClose.classList.add('wc-active');
+  }
+
   function switchModel(model) {
     // 乐观更新 UI(立即反映)
     getLabel(select).textContent = model.name;
@@ -1205,6 +1220,7 @@
 
     // 3. loading 占位
     const loading = appendLoading();
+    setAgentLight('running');
 
     try {
       const r = await fetch('/api/chat', {
@@ -1223,6 +1239,7 @@
       if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
 
       if (!data || !data.ok) {
+        setAgentLight('error');
         appendStatus('✗ 失败: ' + ((data && data.error) || r.status));
         return;
       }
@@ -1242,17 +1259,23 @@
       //    为简单:重新渲染尾部,从 lastUserIndex 之后开始
       reRenderFromLastUser();
 
-      // 7. 处理 pending
+      // 7. 处理 pending + 顶栏状态灯
       renderPending(data.pending);
       if (data.pending) {
+        setAgentLight('plan');
         appendStatus('⏸ 等待用户确认(见上方卡片)');
-      } else if (data.stopped === 'max_rounds') {
-        appendStatus('⚠ 达到最大轮次,未收敛');
       } else if (data.stopped === 'error') {
+        setAgentLight('error');
         appendStatus('✗ 错误,已停止');
+      } else if (data.stopped === 'max_rounds') {
+        setAgentLight('idle');
+        appendStatus('⚠ 达到最大轮次,未收敛');
+      } else {
+        setAgentLight('idle');
       }
     } catch (err) {
       if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
+      setAgentLight('error');
       appendStatus('✗ 请求失败: ' + err);
     } finally {
       sending = false;
@@ -1382,6 +1405,164 @@
     termCollapse.addEventListener('click', () => {
       const collapsed = terminalEl.classList.toggle('collapsed');
       termCollapse.title = collapsed ? '展开终端' : '收起终端';
+    });
+  }
+
+  // 终端多线程会话:每个会话独立 history,cwd,tab
+  const termBody     = document.getElementById('term-body');
+  const termInput    = document.getElementById('term-input');
+  const termClear    = document.getElementById('term-clear');
+  const termNew      = document.getElementById('term-new');
+  const termTabList  = document.getElementById('term-tab-list');
+
+  const termSessions = new Map();   // id -> { id, name, cwd, history: [{text, cls}] }
+  let   termActiveId = null;
+
+  function makeSessionId() {
+    return 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  }
+  function sessionName(n) {
+    return n === 1 ? 'bash' : 'bash ' + n;
+  }
+  function getActive() {
+    return termSessions.get(termActiveId);
+  }
+  function renderTermTabs() {
+    if (!termTabList) return;
+    termTabList.innerHTML = '';
+    for (const s of termSessions.values()) {
+      const tab = document.createElement('div');
+      tab.className = 'term-tab' + (s.id === termActiveId ? ' active' : '');
+      tab.dataset.sid = s.id;
+
+      const name = document.createElement('span');
+      name.className = 'term-tab-name';
+      name.textContent = s.name;
+
+      const close = document.createElement('span');
+      close.className = 'term-tab-close';
+      close.title = '关闭此终端';
+      close.textContent = '×';
+      close.addEventListener('click', e => {
+        e.stopPropagation();
+        closeTermSession(s.id);
+      });
+
+      tab.appendChild(name);
+      tab.appendChild(close);
+      tab.addEventListener('click', () => selectTermSession(s.id));
+      termTabList.appendChild(tab);
+    }
+  }
+  function renderTermBody() {
+    if (!termBody) return;
+    // 清掉旧的输出行,保留提示符那一行
+    termBody.querySelectorAll('.term-line').forEach(el => el.remove());
+    const s = getActive();
+    if (!s) return;
+    for (const line of s.history) {
+      const div = document.createElement('div');
+      div.className = 'term-line' + (line.cls ? ' ' + line.cls : '');
+      div.textContent = line.text;
+      termBody.insertBefore(div, termBody.querySelector('.term-prompt-row'));
+    }
+    termBody.scrollTop = termBody.scrollHeight;
+    if (termInput) termInput.value = '';
+  }
+  function appendTermLine(text, cls) {
+    const s = getActive();
+    if (s) s.history.push({ text, cls: cls || '' });
+    if (!termBody) return;
+    const div = document.createElement('div');
+    div.className = 'term-line' + (cls ? ' ' + cls : '');
+    div.textContent = text;
+    termBody.insertBefore(div, termBody.querySelector('.term-prompt-row'));
+    termBody.scrollTop = termBody.scrollHeight;
+  }
+  function createTermSession() {
+    const id = makeSessionId();
+    const n  = termSessions.size + 1;
+    termSessions.set(id, {
+      id,
+      name: sessionName(n),
+      cwd:  '',
+      history: [
+        { text: '终端', cls: '' },
+        { text: '输入命令后按 Enter 执行。',    cls: 'term-dim' },
+      ],
+    });
+    termActiveId = id;
+    renderTermTabs();
+    renderTermBody();
+    if (termInput) termInput.focus();
+  }
+  function selectTermSession(id) {
+    if (!termSessions.has(id)) return;
+    termActiveId = id;
+    renderTermTabs();
+    renderTermBody();
+    if (termInput) termInput.focus();
+  }
+  function closeTermSession(id) {
+    if (!termSessions.has(id)) return;
+    termSessions.delete(id);
+    if (termActiveId === id) {
+      // 切到下一个剩余会话;没有就新建一个
+      const next = termSessions.values().next().value;
+      if (next) {
+        termActiveId = next.id;
+      } else {
+        createTermSession();
+        return;   // createTermSession 已重渲
+      }
+    }
+    renderTermTabs();
+    renderTermBody();
+    if (termInput) termInput.focus();
+  }
+
+  // 初始会话
+  createTermSession();
+
+  // 新建
+  if (termNew) termNew.addEventListener('click', () => createTermSession());
+
+  // 清屏:只清当前会话
+  if (termClear && termBody) {
+    termClear.addEventListener('click', () => {
+      const s = getActive();
+      if (s) s.history = [];
+      termBody.querySelectorAll('.term-line').forEach(el => el.remove());
+      if (termInput) termInput.focus();
+    });
+  }
+
+  // 输入 → /api/terminal/run → 输出
+  if (termInput && termBody) {
+    termInput.addEventListener('keydown', async e => {
+      if (e.key !== 'Enter' || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+      e.preventDefault();
+      const cmd = termInput.value;
+      if (!cmd.trim()) return;
+      appendTermLine(`$ ${cmd}`, 'term-cmd');
+      termInput.value = '';
+      termInput.disabled = true;
+      try {
+        const r = await fetch('/api/terminal/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: cmd }),
+        }).then(r => r.json());
+        if (r.stdout) appendTermLine(r.stdout, 'term-out');
+        if (r.stderr) appendTermLine(r.stderr, 'term-err');
+        if (r.error)  appendTermLine(`[错误] ${r.error}`, 'term-err');
+        appendTermLine(`[退出 ${r.returncode ?? '?'}]`, r.ok ? 'term-ok' : 'term-err');
+      } catch (err) {
+        appendTermLine(`[网络错误] ${err.message || err}`, 'term-err');
+      } finally {
+        termInput.disabled = false;
+        termInput.focus();
+      }
     });
   }
   if (pendingReject) {

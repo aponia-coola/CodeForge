@@ -340,5 +340,29 @@ def api_file_save():
     except OSError as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+# ════════════════════════════════════════════════════════════
+#                      终端执行
+# ════════════════════════════════════════════════════════════
+
+@app.post('/api/terminal/run')
+def api_terminal_run():
+    """
+    执行一条 shell 命令并返回结果。
+    Body: {"command": "...", "cwd": "..."(可选), "timeout": int(秒,可选,默认 30)}
+    """
+    from terminal import run as term_run
+    data    = flask_request.get_json(silent=True) or {}
+    command = (data.get('command') or '').strip()
+    cwd     = (data.get('cwd') or '').strip() or None
+    try:
+        timeout = int(data.get('timeout') or 30)
+    except (TypeError, ValueError):
+        timeout = 30
+    if not command:
+        return jsonify({"ok": False, "error": "缺少 command"}), 400
+    result = term_run(command, cwd=cwd, timeout=timeout)
+    return jsonify(result)
+
+
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=9191, debug=False)

@@ -220,3 +220,42 @@ def _remove_file_tool(file_path: str, auto: bool = True) -> str:
         return json.dumps({"status": "pending_approval", **pending}, ensure_ascii=False)
     file.remove_file(file_path)
     return f"已删除 {file_path}"
+
+
+@tool(
+    name="run_command",
+    description=(
+        "在 shell 中执行一条命令并返回 stdout / stderr / returncode。"
+        "适用于运行脚本、跑测试、git/pip/node 等命令行工具。"
+        "长时间运行的命令请传 timeout(秒)。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "command": {"type": "string",  "description": "要执行的 shell 命令"},
+            "cwd":     {"type": "string",  "description": "工作目录(绝对路径,默认用户主目录)"},
+            "timeout": {"type": "integer", "default": 30, "description": "超时秒数(默认 30)"},
+        },
+        "required": ["command"],
+    },
+)
+def _run_command_tool(command: str, cwd: str | None = None, timeout: int = 30) -> str:
+    from terminal import run as term_run
+    result = term_run(command, cwd=cwd, timeout=timeout)
+    # 标准化返回给模型:命令/cwd/返回码 + stdout + stderr + 错误
+    parts = [
+        f"command:   {result.get('command', '')}",
+        f"cwd:       {result.get('cwd', '')}",
+        f"returncode: {result.get('returncode', '?')}",
+    ]
+    out = (result.get("stdout") or "").strip()
+    err = (result.get("stderr") or "").strip()
+    if out:
+        parts.append("--- stdout ---\n" + out)
+    if err:
+        parts.append("--- stderr ---\n" + err)
+    if result.get("error"):
+        parts.append("error: " + str(result["error"]))
+    if result.get("truncated"):
+        parts.append("(输出被截断)")
+    return "\n".join(parts)

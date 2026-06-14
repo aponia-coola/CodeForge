@@ -213,16 +213,16 @@
     <!-- 终端 -->
     <div class="terminal collapsed">
       <div class="term-tabs">
-        <div class="term-tab">bash</div>
+        <div class="term-tab-list" id="term-tab-list"></div>
         <div class="term-actions">
-          <span title="新建">
+          <span id="term-new" title="新建">
             <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
               <path d="M8 3v10M3 8h10"/>
             </svg>
           </span>
-          <span title="菜单">
-            <svg viewBox="0 0 16 16" width="11" height="11" fill="currentColor">
-              <circle cx="4" cy="8" r="1.2"/><circle cx="8" cy="8" r="1.2"/><circle cx="12" cy="8" r="1.2"/>
+          <span id="term-clear" title="清屏">
+            <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+              <path d="M4 4l8 8M12 4l-8 8"/>
             </svg>
           </span>
           <span id="term-collapse" title="展开终端">
@@ -232,12 +232,11 @@
           </span>
         </div>
       </div>
-      <div class="term-body">
-        <div>AI 智能体 网页编译器 — 终端</div>
-        <div>输入 'help' 查看可用命令。</div>
-        <div style="margin-top:6px;">
-          <span class="term-prompt">/$</span>
-          <span class="term-cursor"></span>
+      <div class="term-body" id="term-body">
+        <div class="term-prompt-row">
+          <span class="term-prompt">$&nbsp;</span>
+          <input class="term-input" id="term-input" type="text" autocomplete="off"
+                 spellcheck="false" placeholder="输入命令并按 Enter…">
         </div>
       </div>
     </div>
