@@ -1142,10 +1142,18 @@
     div.className = 'msg msg-assistant msg-loading';
     div.innerHTML = `
       <div class="msg-label">Assistant</div>
-      <div class="msg-bubble"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>`;
+      <div class="msg-bubble">
+        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+        <span class="msg-loading-status">开始运行…</span>
+      </div>`;
     aiMessages.appendChild(div);
     scrollToBottom();
     return div;
+  }
+  function setLoadingStatus(loadingEl, text) {
+    if (!loadingEl) return;
+    const el = loadingEl.querySelector('.msg-loading-status');
+    if (el) el.textContent = text;
   }
 
   function appendStatus(text) {
@@ -1199,7 +1207,7 @@
     }
   }
 
-  // ──────── 发送消息 ────────
+  // ──────── 发送消息(流式) ────────
   async function sendMessage() {
     if (sending) return;
     if (!aiInput) return;
@@ -1214,16 +1222,17 @@
     appendMessage('user', text);
     aiInput.value = '';
     autoResize();
-
-    // 2. 同步推入 history
     history.push({ role: 'user', content: text });
 
-    // 3. loading 占位
+    // 2. loading 占位 + 顶栏绿灯
     const loading = appendLoading();
     setAgentLight('running');
 
+    // 跟踪当前 round/max,用来拼状态文字
+    let roundNow = 0, roundMax = 0, lastTool = '';
+
     try {
-      const r = await fetch('/api/chat', {
+      const resp = await fetch('/api/chat/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -1231,43 +1240,97 @@
           history: history,
           cwd: currentRoot || null,
           plan_model: togglePlan ? togglePlan.checked : null,
+          max_rounds: 20,
         }),
       });
-      const data = await r.json();
+      if (!resp.ok || !resp.body) {
+        throw new Error(`HTTP ${resp.status}`);
+      }
 
-      // 4. 拆掉 loading
+      const reader  = resp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buf = '';
+      let finalData = null;
+
+      // SSE 解析:按 \n\n 分块,每块含 event/data 行
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf('\n\n')) !== -1) {
+          const block = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const lines = block.split('\n');
+          let evName = 'message', evData = null;
+          for (const ln of lines) {
+            if (ln.startsWith('event:')) evName = ln.slice(6).trim();
+            else if (ln.startsWith('data:')) {
+              try { evData = JSON.parse(ln.slice(5).trim()); }
+              catch { evData = ln.slice(5).trim(); }
+            }
+          }
+          if (!evData) continue;
+
+          if (evName === 'start') {
+            setLoadingStatus(loading, '开始运行…');
+          } else if (evName === 'round') {
+            setLoadingStatus(loading, '调用模型…');
+          } else if (evName === 'tool_call') {
+            lastTool = evData.name;
+            setLoadingStatus(loading, `调用工具: ${lastTool}`);
+            // 把这条工具调用即时插入到聊天流里(在 loading 之前)
+            const tc = { function: { name: evData.name, arguments: JSON.stringify(evData.args || {}) } };
+            insertBeforeLoading(loading, () => appendToolCallRaw(tc));
+          } else if (evName === 'tool_result') {
+            setLoadingStatus(loading,
+              `${lastTool} → ${evData.ok ? '成功' : '失败'}`);
+            // 工具结果也即时插入
+            const m = { content: evData.content || '' };
+            insertBeforeLoading(loading, () => appendToolResultRaw(m));
+          } else if (evName === 'pending') {
+            setLoadingStatus(loading, '等待用户确认');
+          } else if (evName === 'done') {
+            finalData = evData;
+          } else if (evName === 'error') {
+            throw new Error(evData.message || '流式错误');
+          }
+        }
+      }
+
+      // 3. 拆掉 loading
       if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
 
-      if (!data || !data.ok) {
+      if (!finalData) {
         setAgentLight('error');
-        appendStatus('✗ 失败: ' + ((data && data.error) || r.status));
+        appendStatus('✗ 流中断,未收到 done');
+        return;
+      }
+      if (!finalData.ok) {
+        setAgentLight('error');
+        appendStatus('✗ 失败: ' + (finalData.answer || 'unknown'));
         return;
       }
 
-      // 5. 用后端返回的 history 同步本地(它含 assistant + tool_calls + tool 结果)
-      if (Array.isArray(data.history)) history = data.history;
-      // 把最后一条 assistant 的新内容也单独展示(冗余但更醒目)
+      // 4. 同步 history
+      if (Array.isArray(finalData.history)) history = finalData.history;
+
+      // 5. 如果最后一轮没有 tool_call 且有 answer 文本,显示
       const lastAssistant = [...history].reverse().find(m => m.role === 'assistant');
-      if (lastAssistant && !Array.isArray(lastAssistant.tool_calls) && lastAssistant.content) {
-        // 已经从 history 渲染过,不再追加
-      } else {
-        // 有工具调用但最后一条不是 assistant,补一行
-        if (data.answer) appendMessage('assistant', data.answer);
+      if (lastAssistant && !Array.isArray(lastAssistant.tool_calls) && lastAssistant.content
+          && finalData.stopped === 'answer') {
+        appendMessage('assistant', lastAssistant.content);
       }
 
-      // 6. 把这一轮新增的 assistant/tool 行追加进视图(history 可能很长,这里只渲染尾部新增)
-      //    为简单:重新渲染尾部,从 lastUserIndex 之后开始
-      reRenderFromLastUser();
-
-      // 7. 处理 pending + 顶栏状态灯
-      renderPending(data.pending);
-      if (data.pending) {
+      // 6. pending 卡 + 顶栏灯
+      renderPending(finalData.pending);
+      if (finalData.pending) {
         setAgentLight('plan');
         appendStatus('⏸ 等待用户确认(见上方卡片)');
-      } else if (data.stopped === 'error') {
+      } else if (finalData.stopped === 'error') {
         setAgentLight('error');
         appendStatus('✗ 错误,已停止');
-      } else if (data.stopped === 'max_rounds') {
+      } else if (finalData.stopped === 'max_rounds') {
         setAgentLight('idle');
         appendStatus('⚠ 达到最大轮次,未收敛');
       } else {
@@ -1283,6 +1346,42 @@
       if (aiStatus) aiStatus.textContent = 'Enter 发送 · Shift+Enter 换行';
       aiInput && aiInput.focus();
     }
+  }
+
+  // 把节点插到 loading 之前(便于流式把"调用工具 / 工具结果"逐条插到进度条上方)
+  function insertBeforeLoading(loadingEl, buildNode) {
+    if (!loadingEl || !aiMessages) return;
+    const node = buildNode();
+    aiMessages.insertBefore(node, loadingEl);
+    scrollToBottom();
+  }
+  // 流式插入用的两个原始构造器,跟 appendToolCall/appendToolResult 等价但不依赖外部状态
+  function appendToolCallRaw(tc) {
+    const div = document.createElement('div');
+    div.className = 'msg msg-tool';
+    div.innerHTML = `
+      <div class="msg-label">🔧 调用工具:<span class="tool-name"> ${escapeHtml(tc.function.name || 'tool')}</span></div>`;
+    return div;
+  }
+  function appendToolResultRaw(m) {
+    const txt = (m.content || '').toString();
+    let parsed = null;
+    try { parsed = JSON.parse(txt); } catch (e) {}
+    let status = '成功', statusClass = 'tool-status-ok';
+    if (parsed && typeof parsed === 'object') {
+      if (parsed.ok === false || parsed.success === false || parsed.error) {
+        status = '失败'; statusClass = 'tool-status-fail';
+      } else if (parsed.ok === true || parsed.success === true) {
+        status = '成功';
+      }
+    } else if (/^(error|err|fail|failed|exception)/i.test(txt.trim())) {
+      status = '失败'; statusClass = 'tool-status-fail';
+    }
+    const div = document.createElement('div');
+    div.className = 'msg msg-tool-result';
+    div.innerHTML = `
+      <div class="msg-label">↳ 结果:<span class="tool-status ${statusClass}"> ${status}</span></div>`;
+    return div;
   }
 
   // 从最后一条 user 之后开始,重新渲染(包含 tool_calls/tool/assistant)

@@ -1,6 +1,6 @@
 import os
 
-from flask import Flask, jsonify, request as flask_request
+from flask import Flask, jsonify, request as flask_request, Response
 
 from explorer.file import list_dir, create as file_create
 from models.request import (
@@ -193,6 +193,60 @@ def api_chat_clear():
     _HISTORY = []
     agent_state.clear_pending()
     return jsonify({"ok": True, "history": [], "state": agent_state.snapshot()})
+
+
+# ════════════════════════════════════════════════════════════
+#            Agent Chat 流式(SSE):实时显示每一步
+# ════════════════════════════════════════════════════════════
+
+@app.post('/api/chat/stream')
+def api_chat_stream():
+    """
+    流式 chat 端点。把 run_stream 的事件序列化为 SSE 推给前端,
+    让用户看到「第 N 轮 / 调用工具 X / 工具返回」。
+    Body: 同 /api/chat
+    """
+    import json as _json
+    data = flask_request.get_json(silent=True) or {}
+    history    = data.get("history") if isinstance(data.get("history"), list) else _HISTORY
+    user_msg   = (data.get("message") or "").strip()
+    max_rounds = int(data.get("max_rounds") or 20)
+    plan_model = data.get("plan_model")
+    cwd        = (data.get("cwd") or "").strip() or None
+
+    def sse(event: str, payload: dict) -> str:
+        return f"event: {event}\ndata: {_json.dumps(payload, ensure_ascii=False)}\n\n"
+
+    def gen():
+        # 用 list 临时缓存 done 事件,最后同步给 _HISTORY
+        final = None
+        try:
+            for ev in agent_loop.run_stream(
+                user_message=user_msg,
+                history=history,
+                max_rounds=max_rounds,
+                plan_model=plan_model,
+                cwd=cwd,
+            ):
+                kind = ev.pop("event", "message")
+                if kind == "done":
+                    final = ev
+                yield sse(kind, ev)
+        except Exception as e:
+            yield sse("error", {"message": f"{type(e).__name__}: {e}"})
+            final = {
+                "ok": False, "answer": f"{type(e).__name__}: {e}",
+                "history": history, "rounds": 0,
+                "tools_used": [], "pending": None, "stopped": "error",
+            }
+
+        # 流结束,把 done 状态写回进程内 history
+        global _HISTORY
+        if final:
+            _HISTORY = final.get("history") or history
+
+    return Response(gen(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 # ════════════════════════════════════════════════════════════

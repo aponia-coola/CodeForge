@@ -116,36 +116,41 @@ def _exec_with_retry(call: Any, retries: int = 1) -> str:
 def run(
     user_message: str,
     history: list | None = None,
-    max_rounds: int = 10,
+    max_rounds: int = 20,
     plan_model: bool | None = None,
     cwd: str | None = None,
 ) -> dict:
+    """collect 模式:跑完一次性返回结果。run_stream 的便利封装。"""
+    final = None
+    for ev in run_stream(user_message, history, max_rounds, plan_model, cwd):
+        if ev.get("event") == "done":
+            final = ev
+    return final or {"answer": "", "history": [], "ok": False, "stopped": "error",
+                     "rounds": 0, "tools_used": [], "pending": None}
+
+
+def run_stream(
+    user_message: str,
+    history: list | None = None,
+    max_rounds: int = 20,
+    plan_model: bool | None = None,
+    cwd: str | None = None,
+):
     """
-    Args:
-        user_message:  本轮用户输入(可空,用于纯续接)
-        history:      之前累积的消息列表
-        max_rounds:   最大工具调用轮次
-        plan_model:   临时覆盖 state.plan_model
-        cwd:          当前工作目录(从资源管理器同步),注入到 system prompt
-    Returns:
-        {
-            "answer":     str,            # 本轮最终回答
-            "rounds":     int,            # 实际跑了几轮
-            "history":    list[dict],     # 完整 messages(供下次 run 续接)
-            "ok":         bool,
-            "stopped":    "answer" | "pending" | "max_rounds" | "error",
-            "tools_used": list[str],
-            "pending":    dict | None,    # state.pending 快照
-        }
+    流式运行 Agent,每步 yield 一个事件 dict(供 SSE 推送给前端)。
+    事件:
+      {"event": "start",        "max_rounds": N}
+      {"event": "round",        "round": R, "max": M}
+      {"event": "tool_call",    "name": "...", "args": {...}}
+      {"event": "tool_result",  "name": "...", "ok": bool, "content": "..."}
+      {"event": "pending",      "pending": {...}}
+      {"event": "done",         "answer", "history", "rounds", "stopped",
+                                "tools_used", "pending", "ok"}
     """
     if plan_model is None:
         plan_model = state.get_plan_model()
 
-    # ── 用户发送"确认/继续/OK"等表达 → 清掉旧 pending + 临时开 auto ──
-    # 否则 pending 不被消费,新一轮一进来就看到 state.pending != None 直接 return,
-    # "确认"消息相当于没发,卡片也不会关;
-    # 即便清掉 pending,若 state.auto=False 模型再调工具,工具内部又会重新 set_pending,
-    # 用户陷入"无限确认"循环。所以确认时临时 auto=True,跑完再还原。
+    # ── "确认/继续/OK" → 清 pending + 临时开 auto(详见 run 的注释) ──
     _CONFIRM_WORDS = {"确认", "继续", "ok", "OK", "Ok", "yes", "Yes", "YES",
                       "确认吧", "可以", "批准", "approve", "Approved", "APPROVED"}
     _saved_auto: bool | None = None
@@ -158,69 +163,96 @@ def run(
     tools_used: list[str] = []
 
     messages = [m for m in (history or []) if isinstance(m, dict)]
-    # 重建 system prompt 以反映当前 plan_model 状态
     messages = [m for m in messages if m.get("role") != "system"]
     messages.insert(0, {"role": "system", "content": _build_system_prompt(plan_model=plan_model, cwd=cwd)})
     if user_message and (not messages or messages[-1].get("role") != "user"):
         messages.append({"role": "user", "content": user_message})
 
     try:
+        yield {"event": "start", "max_rounds": max_rounds}
+
         for r in range(max_rounds):
+            yield {"event": "round", "round": r + 1, "max": max_rounds}
+
             try:
                 msg = model_request(messages=messages, tools=tools)
             except Exception as e:
-                return {
-                    "answer":     f"模型调用失败:{type(e).__name__}: {e}",
-                    "rounds":     r,
-                    "history":    messages,
-                    "ok":         False,
-                    "stopped":    "error",
+                yield {
+                    "event":     "done",
+                    "answer":    f"模型调用失败:{type(e).__name__}: {e}",
+                    "history":   messages,
+                    "ok":        False,
+                    "stopped":   "error",
+                    "rounds":    r,
                     "tools_used": tools_used,
-                    "pending":    state.get_pending(),
+                    "pending":   state.get_pending(),
                 }
+                return
 
             # 没有 tool_calls → 收尾
             if not msg.tool_calls:
                 messages.append(_msg_to_dict(msg))
-                return {
+                yield {
+                    "event":      "done",
                     "answer":     msg.content or "",
-                    "rounds":     r + 1,
                     "history":    messages,
                     "ok":         True,
                     "stopped":    "answer",
+                    "rounds":     r + 1,
                     "tools_used": tools_used,
                     "pending":    state.get_pending(),
                 }
+                return
 
-            # 有 tool_calls → 记录并逐个执行
+            # 有 tool_calls → 记录 + 逐个执行,边执行边 yield
             messages.append(_msg_to_dict(msg))
             for call in msg.tool_calls:
                 if call.function.name not in tools_used:
                     tools_used.append(call.function.name)
+                try:
+                    args = json.loads(call.function.arguments) if call.function.arguments else {}
+                except json.JSONDecodeError:
+                    args = {"_raw": call.function.arguments}
+                yield {
+                    "event": "tool_call",
+                    "name":  call.function.name,
+                    "args":  args,
+                }
                 result = _exec_with_retry(call, retries=1)
+                ok = not (isinstance(result, str) and result.startswith("工具 ") and "执行失败" in result)
+                yield {
+                    "event":   "tool_result",
+                    "name":    call.function.name,
+                    "ok":      ok,
+                    "content": result,
+                }
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
                 # 任一工具触发 pending → 整轮停下
                 if state.get_pending() is not None:
-                    return {
+                    pending = state.get_pending()
+                    yield {"event": "pending", "pending": pending}
+                    yield {
+                        "event":      "done",
                         "answer":     "等待用户确认",
-                        "rounds":     r + 1,
                         "history":    messages,
                         "ok":         True,
                         "stopped":    "pending",
+                        "rounds":     r + 1,
                         "tools_used": tools_used,
-                        "pending":    state.get_pending(),
+                        "pending":    pending,
                     }
+                    return
 
-        return {
+        yield {
+            "event":      "done",
             "answer":     f"未收敛(达到 {max_rounds} 轮)",
-            "rounds":     max_rounds,
             "history":    messages,
             "ok":         False,
             "stopped":    "max_rounds",
+            "rounds":     max_rounds,
             "tools_used": tools_used,
             "pending":    state.get_pending(),
         }
     finally:
-        # 恢复用户原本的 auto 设置
         if _saved_auto is not None:
             state.set_auto(_saved_auto)
