@@ -68,8 +68,14 @@
     // name: 'explorer' | 'search' | 'scm' | ''  (空 = 全部折叠)
     const sidebar = document.querySelector('.sidebar');
     if (sidebar) {
-      sidebar.classList.remove('collapsed');
-      sidebar.style.width = '';
+      if (name) {
+        // 展开
+        sidebar.classList.remove('collapsed');
+        sidebar.style.width = '';
+      } else {
+        // 完全折叠（宽度归零）
+        sidebar.classList.add('collapsed');
+      }
     }
     // 取消所有内部视图图标的 active
     document.querySelectorAll('.sidebar-icons [data-target]').forEach(i => {
