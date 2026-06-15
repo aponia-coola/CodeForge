@@ -28,6 +28,14 @@ def _load_prompt() -> dict:
 
 def _build_system_prompt(plan_model: bool = True, cwd: str | None = None) -> str:
     p = _load_prompt()
+    if not plan_model:
+        # plan_model=False: 替换 system 提示词,完全不提 plan
+        system = (
+            "你是 CodeForge,运行在 AI Agent IDE。你拥有工具来查看、创建、修改、删除文件。"
+            "直接调用文件工具完成任务,不需要 plan 确认。"
+        )
+    else:
+        system = p['system']
     if plan_model:
         stages = "\n".join(f"- **{k}**: {v}" for k, v in p["stages"].items())
         rules  = "\n".join(f"{i+1}. {r}" for i, r in enumerate(p["rules"]))
@@ -60,7 +68,7 @@ def _build_system_prompt(plan_model: bool = True, cwd: str | None = None) -> str
         f"- 需要列目录、读文件、写文件时,优先围绕 cwd 推断路径,无需再次询问"
     ) if cwd else ""
 
-    return f"{p['system']}\n\n{plan_section}{cwd_section}"
+    return f"{system}\n\n{plan_section}{cwd_section}"
 
 
 def _msg_to_dict(msg: Any) -> dict:

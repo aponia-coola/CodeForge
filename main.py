@@ -389,6 +389,30 @@ def api_diff_revert():
     return jsonify({"ok": True, "files": agent_diff.list_pending()})
 
 
+@app.post('/api/diff/apply')
+def api_diff_apply():
+    """用户确认保留 → 把 pending patch 写入磁盘。Body: {"path": "..."}"""
+    data = flask_request.get_json(silent=True) or {}
+    path = (data.get("path") or "").strip()
+    if not path:
+        return jsonify({"ok": False, "error": "缺少 path"}), 400
+    res = agent_diff.apply_patch(path)
+    if not res.get("ok"):
+        return jsonify(res), 400
+    return jsonify({"ok": True, "files": agent_diff.list_pending()})
+
+
+@app.post('/api/diff/discard')
+def api_diff_discard():
+    """用户撤销 → 丢弃 pending patch(不写磁盘)。Body: {"path": "..."}"""
+    data = flask_request.get_json(silent=True) or {}
+    path = (data.get("path") or "").strip()
+    if not path:
+        return jsonify({"ok": False, "error": "缺少 path"}), 400
+    agent_diff.discard_patch(path)
+    return jsonify({"ok": True, "files": agent_diff.list_pending()})
+
+
 # ════════════════════════════════════════════════════════════
 #                      Git 源代码管理(Tier 1)
 # ════════════════════════════════════════════════════════════

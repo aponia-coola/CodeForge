@@ -139,7 +139,20 @@ def _list_dir_tool(path: str, show_hidden: bool = False) -> str:
     },
 )
 def _read_file_tool(path: str, start_line: int | None = None) -> str:
-    return file.read(path, start_line=start_line)
+    # 如果有 pending patch 未确认,返回预览内容(让模型看到 patch 后的效果)
+    if agent_diff.has_pending(path):
+        import explorer.file as _ef
+        raw = agent_diff._PENDING.get(path, {}).get("new") or _ef.read_raw(path)
+    else:
+        raw = file.read(path, start_line=start_line)
+        return raw
+    # pending 状态:返回带行号的预览
+    lines = raw.splitlines(keepends=True)
+    s = 0 if start_line is None else max(0, start_line - 1)
+    selected = lines[s:]
+    total = s + len(selected)
+    width = len(str(total)) if total > 0 else 1
+    return ''.join(f"{s + i + 1:>{width}} | {line}" for i, line in enumerate(selected))
 
 
 @tool(
@@ -177,32 +190,38 @@ def _create_file(file_path: str, content: str = "", auto: bool = True) -> str:
 @tool(
     name="edit_file",
     description=(
-        "修改已有文件(按行替换)。**调用前必须先 read 或 list_dir 拿到当前内容,严禁凭印象修改。**"
-        "mode=edit 时通过 position/end_line 指定替换行范围;"
-        "mode=append 时把 content 追加到文件末尾。"
+        "修改已有文件(搜索替换 patch 模式)。**调用前必须先 read_file 拿到当前内容,严禁凭印象修改。**\n"
+        "传入 patches 数组,每个 patch 包含 old(要替换的原文,必须和文件中的内容完全一致,含缩进)和 new(替换后的内容)。\n"
+        "old 必须在文件中唯一匹配,包含足够上下文确保唯一性。\n"
+        "改动不会立即写入磁盘,会先在前端显示 diff,用户确认保留后才生效。"
     ),
     parameters={
         "type": "object",
         "properties": {
             "file_path": {"type": "string",  "description": "要修改的文件绝对路径"},
-            "content":   {"type": "string",  "description": "新内容"},
-            "mode":      {"type": "string",  "enum": ["edit", "append"], "default": "edit", "description": "edit=按行替换;append=追加到末尾"},
-            "position":  {"type": "integer", "description": "edit 模式的起始行号(0-indexed,包含)"},
-            "end_line":  {"type": "integer", "description": "edit 模式的结束行号(不包含),默认 position+1"},
-            "auto":      {"type": "boolean", "default": True, "description": "True=立即执行;False=返回方案待确认"},
+            "patches":   {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "old": {"type": "string", "description": "要替换的原文本(必须和文件内容完全一致,含缩进和换行)"},
+                        "new": {"type": "string", "description": "替换后的新文本"},
+                    },
+                    "required": ["old", "new"],
+                },
+                "description": "搜索替换 patch 列表",
+            },
         },
-        "required": ["file_path", "content"],
+        "required": ["file_path", "patches"],
     },
 )
-def _edit_file(file_path: str, content: str, mode: str = "edit", position: int | None = None, end_line: int | None = None, auto: bool = True) -> str:
-    if not state.get_auto() or not auto:
-        pending = {"action": "edit_file", "args": {"file_path": file_path, "content": content, "mode": mode, "position": position, "end_line": end_line}}
-        state.set_pending(pending)
-        return json.dumps({"status": "pending_approval", **pending}, ensure_ascii=False)
-    agent_diff.snapshot_before(file_path)
-    file.change(file_path, content, mode=mode, position=position, end_line=end_line)
-    agent_diff.snapshot_after(file_path, "edit")
-    return f"已修改 {file_path}({mode} 模式,{len(content)} chars)"
+def _edit_file(file_path: str, patches: list) -> str:
+    if not isinstance(patches, list):
+        return "错误: patches 必须是数组"
+    result = agent_diff.store_patch(file_path, patches)
+    if not result["ok"]:
+        return f"edit_file 失败: {result.get('error', '未知错误')}"
+    return f"已生成 patch 预览({len(patches)} 处改动),等待用户在前端确认保留或撤销"
 
 
 @tool(

@@ -132,3 +132,66 @@ def clear(path: str | None = None) -> None:
         _DIFFS = {}
     else:
         _DIFFS.pop(path, None)
+
+
+# ════════════════════════════════════════════════════════════
+#                   Pending Patch 系统
+# ════════════════════════════════════════════════════════════
+# AI 生成 patch 后不立即写文件,先存到 _PENDING,前端显示 diff。
+# 用户点「保留」→ apply_patch 写入磁盘;点「撤销」→ discard_patch 丢弃。
+_PENDING: dict[str, dict] = {}   # path -> {"old": 原文, "new": 预览全文, "patches": [...]}
+
+
+def store_patch(path: str, patches: list[dict]) -> dict:
+    """
+    存储 pending patch(不写磁盘)。
+    patches: [{"old": "...", "new": "..."}, ...]
+    成功返回 {"ok": True},失败返回 {"ok": False, "error": "..."}。
+    同时更新 _DIFFS,让前端 diff viewer 能展示。
+    """
+    try:
+        old = _file.read_raw(path)
+    except Exception as e:
+        return {"ok": False, "error": f"读取文件失败: {e}"}
+    try:
+        new = _file.apply_patches_content(old, patches)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    # 如果 patch 没产生实际变化,拒绝
+    if old == new:
+        return {"ok": False, "error": "patch 未产生任何变化"}
+    _PENDING[path] = {"old": old, "new": new, "patches": patches}
+    # 同步到 _DIFFS,让 diff viewer / 编辑器 baseline 能展示
+    _DIFFS[path] = {"old": old, "new": new, "op": "edit"}
+    return {"ok": True}
+
+
+def apply_patch(path: str) -> dict:
+    """用户确认保留 → 把 pending patch 写入磁盘。"""
+    if path not in _PENDING:
+        return {"ok": False, "error": "该文件没有待确认的 patch"}
+    new = _PENDING[path]["new"]
+    try:
+        dpath = os.path.dirname(path)
+        if dpath and not os.path.exists(dpath):
+            os.makedirs(dpath, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fp:
+            fp.write(new)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    _PENDING.pop(path, None)
+    # 写入后从 _DIFFS 移除(改动已确认保留)
+    _DIFFS.pop(path, None)
+    return {"ok": True}
+
+
+def discard_patch(path: str) -> dict:
+    """用户撤销 → 丢弃 pending patch(不写磁盘)。"""
+    _PENDING.pop(path, None)
+    _DIFFS.pop(path, None)
+    return {"ok": True}
+
+
+def has_pending(path: str) -> bool:
+    """该文件是否有待确认的 patch。"""
+    return path in _PENDING

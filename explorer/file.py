@@ -4,6 +4,12 @@ def list(path):
     return os.listdir(path)
 
 
+def read_raw(path):
+    """读取文件原文(不含行号),用于 patch 搜索替换的基线。"""
+    with open(path, 'r', encoding='utf-8') as f:
+        return f.read()
+
+
 def create(file_path):
     with open(file_path, 'w', encoding='utf-8') as file:
         file.write("")
@@ -92,3 +98,25 @@ def list_dir(path, show_hidden=True):
     folders.sort(key=lambda x: x["name"].lower())
     files.sort(key=lambda x: x["name"].lower())
     return {"path": abs_path, "folders": folders, "files": files}
+
+
+def apply_patches_content(content, patches):
+    """
+    对原文 content 应用一组搜索替换 patch。
+    patches: [{"old": "...", "new": "..."}, ...]
+    每个 patch 的 old 必须在当前内容中唯一匹配,否则报错。
+    返回应用后的完整内容。
+    """
+    result = content
+    for i, p in enumerate(patches):
+        old = p.get("old", "")
+        new = p.get("new", "")
+        if not old:
+            raise ValueError(f"patch #{i+1}: old 为空")
+        count = result.count(old)
+        if count == 0:
+            raise ValueError(f"patch #{i+1}: 未找到匹配的代码块,可能已被其他 patch 修改")
+        if count > 1:
+            raise ValueError(f"patch #{i+1}: 匹配到 {count} 处,需要更精确的上下文(要求唯一匹配)")
+        result = result.replace(old, new, 1)
+    return result

@@ -750,19 +750,38 @@
   }
 
   // ── diff footer 按钮 ──
-  // 保留:关闭 diff viewer 回到主页(改动保留在磁盘上)
-  if (diffKeepBtn) diffKeepBtn.addEventListener('click', () => {
-    setDiffFiles([]);
-    appendStatus('已保留改动');
+  // 保留:对当前选中文件应用 pending patch(写入磁盘)
+  if (diffKeepBtn) diffKeepBtn.addEventListener('click', async () => {
+    if (!diffActive) { appendStatus('没有可保留的文件'); return; }
+    const target = diffActive;
+    try {
+      const r = await fetch('/api/diff/apply', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path: target}),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        appendStatus(`已保留 ${target.split(/[\\\/]/).pop()}(patch 已写入)`);
+        setDiffFiles(d.files || []);
+        treeSignature.clear();
+        pollPath(currentRoot);
+        for (const p of expandedFolders) pollPath(p);
+      } else {
+        appendStatus(`保留失败:${d.error || '未知错误'}`);
+      }
+    } catch (e) {
+      appendStatus(`保留失败:${String(e)}`);
+    }
   });
 
-  // 撤销:把当前选中文件恢复到 agent 改动前
+  // 撤销:丢弃当前选中文件的 pending patch(不写磁盘)
   if (diffDiscardBtn) diffDiscardBtn.addEventListener('click', async () => {
     if (!diffActive) { appendStatus('没有可撤销的文件'); return; }
     const target = diffActive;
-    if (!confirm(`撤销对 ${target.split(/[\\\/]/).pop()} 的改动?文件会恢复到 agent 改动前。`)) return;
+    if (!confirm(`撤销对 ${target.split(/[\\\/]/).pop()} 的改动?文件不会被修改。`)) return;
     try {
-      const r = await fetch('/api/diff/revert', {
+      const r = await fetch('/api/diff/discard', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({path: target}),
@@ -771,10 +790,6 @@
       if (d.ok) {
         appendStatus(`已撤销 ${target.split(/[\\\/]/).pop()}`);
         setDiffFiles(d.files || []);
-        // 强制刷新文件树:清签名再 poll
-        treeSignature.clear();
-        pollPath(currentRoot);
-        for (const p of expandedFolders) pollPath(p);
       } else {
         appendStatus(`撤销失败:${d.error || '未知错误'}`);
       }
@@ -1460,26 +1475,9 @@
     });
 
     keepBtn.addEventListener('click', () => {
-      // 保留 = 接受改动:清除 agent diff 高亮 + 后端 diff 记录
+      // 有 pending patch → 调 apply 端点写入磁盘
       if (agentBaseline !== null) {
-        agentBaseline = null;
-        clearAgentDiff();
-        // 后端清除该文件的 diff 记录
-        fetch('/api/diff/clear', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({path: file.path}),
-        }).catch(() => {});
-        appendStatus('已保留 AI 改动');
-      }
-      // 同时有用户手编辑 → 保存
-      if (dirty) save();
-    });
-    discardBtn.addEventListener('click', () => {
-      // 有 agent 改动 → 撤销 agent 改动(恢复到 baseline)
-      if (agentBaseline !== null) {
-        if (!confirm('撤销 AI 对此文件的改动?恢复到 AI 修改前。')) return;
-        fetch('/api/diff/revert', {
+        fetch('/api/diff/apply', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({path: file.path}),
@@ -1487,25 +1485,48 @@
           .then(r => r.json())
           .then(d => {
             if (d.ok) {
-              // 重新读文件
-              fetch('/api/file/read?path=' + encodeURIComponent(file.path))
-                .then(r2 => r2.json())
-                .then(d2 => {
-                  if (d2.ok) {
-                    saved = d2.content;
-                    cm.setValue(d2.content);
-                    agentBaseline = null;
-                    clearAgentDiff();
-                    clearLineDiff();
-                    dirty = false;
-                    setStatus(saved, dirty, d2.size);
-                    appendStatus('已撤销 AI 改动');
-                    // 刷新文件树
-                    treeSignature.clear();
-                    pollPath(currentRoot);
-                    for (const p of expandedFolders) pollPath(p);
-                  }
-                });
+              agentBaseline = null;
+              clearAgentDiff();
+              footer.style.display = 'none';
+              appendStatus('已保留 AI 改动(patch 已写入)');
+              // 刷新 diff 列表
+              setDiffFiles(d.files || []);
+              // 刷新文件树
+              treeSignature.clear();
+              pollPath(currentRoot);
+              for (const p of expandedFolders) pollPath(p);
+            } else {
+              appendStatus('保留失败: ' + (d.error || '未知错误'));
+            }
+          })
+          .catch(e => appendStatus('保留失败: ' + e));
+        return;
+      }
+      // 没有 pending patch,只有用户手编辑 → 直接保存
+      if (dirty) save();
+    });
+    discardBtn.addEventListener('click', () => {
+      // 有 pending patch → 调 discard 端点丢弃(不写磁盘)
+      if (agentBaseline !== null) {
+        if (!confirm('撤销 AI 对此文件的改动?文件不会被修改。')) return;
+        fetch('/api/diff/discard', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({path: file.path}),
+        })
+          .then(r => r.json())
+          .then(d => {
+            if (d.ok) {
+              // 恢复编辑器内容到磁盘原文(= saved)
+              cm.setValue(saved);
+              agentBaseline = null;
+              clearAgentDiff();
+              clearLineDiff();
+              dirty = false;
+              setStatus(saved, dirty, file.size);
+              footer.style.display = 'none';
+              appendStatus('已撤销 AI 改动');
+              setDiffFiles(d.files || []);
             } else {
               appendStatus('撤销失败: ' + (d.error || '未知错误'));
             }
@@ -1513,7 +1534,7 @@
           .catch(e => appendStatus('撤销失败: ' + e));
         return;
       }
-      // 否则:撤销用户手编辑
+      // 没有 pending patch,撤销用户手编辑
       if (!dirty) { appendStatus('没有改动可撤销'); return; }
       if (!confirm('丢弃当前所有未保存改动?回到上次保存的状态。')) return;
       cm.setValue(saved);
