@@ -50,7 +50,7 @@
         <path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25V5.75A1.75 1.75 0 0014.25 4H8.81L7.43 2.617A1.75 1.75 0 006.19 2H1.75z"/>
       </svg>
     </div>
-    <div title="搜索">
+    <div title="搜索" data-target=".search-view">
       <svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6">
         <circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/>
       </svg>
@@ -73,7 +73,7 @@
   <!-- 左侧文件树 -->
   <div class="sidebar">
     <div class="sidebar-header">
-      <span>资源管理器</span>
+      <span id="sidebar-header-title">资源管理器</span>
       <span>
         <span title="打开文件夹" data-action="open-folder-header">
           <svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
@@ -143,6 +143,15 @@
       </div>
       <div class="scm-changes" id="scm-changes"></div>
     </div>
+
+    <!-- 全局搜索 -->
+    <div class="search-view" id="search-view" style="display:none;">
+      <div class="search-header">
+        <input type="text" class="search-input" id="search-input" placeholder="搜索文件名或内容...">
+      </div>
+      <div class="search-meta" id="search-meta"></div>
+      <div class="search-results" id="search-results"></div>
+    </div>
   </div>
 
   <!-- 左侧文件树宽度拖拽手柄 -->
@@ -155,8 +164,6 @@
       <div class="center-title">CodeForge</div>
       <div class="center-sub">AI 驱动的网页编码工作台</div>
       <div class="shortcuts">
-        <div class="shortcut-row"><span class="kbd">Ctrl+P</span> 快速打开</div>
-        <div class="shortcut-row"><span class="kbd">Ctrl+Shift+P</span> 命令面板</div>
         <div class="shortcut-row"><span class="kbd">Ctrl+J</span> 切换 Agent 栏</div>
         <div class="shortcut-row"><span class="kbd">Ctrl+B</span> 切换资源管理器</div>
       </div>

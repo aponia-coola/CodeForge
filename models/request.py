@@ -117,7 +117,8 @@ def get_models() -> list[dict]:
 
 def set_current_model(model_id: str) -> bool:
     """
-    热切换当前模型。会同步重建 OpenAI client(不同模型可能 base_url/apiKey 不同)。
+    热切换当前模型。会同步重建 OpenAI client(不同模型可能 base_url/apiKey 不同),
+    并把 current_model 持久化回 model.json,这样 reload 时不会被覆盖回旧值。
     Returns: 切换成功返回 True,id 不存在或在白名单外返回 False。
     """
     global _CURRENT_MODEL, _BASE_URL, _API_KEY, _client
@@ -130,6 +131,17 @@ def set_current_model(model_id: str) -> bool:
     _BASE_URL = _strip_chat_completions(m.get("url", "")) or _BASE_URL
     _API_KEY = m.get("apiKey") or m.get("api_key") or _API_KEY
     _client = _build_client()
+    # 持久化:把 current_model 写回 model.json,保证 reload 后仍是用户的选择
+    try:
+        cfg = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+        cfg["current_model"] = model_id
+        _CONFIG_PATH.write_text(
+            json.dumps(cfg, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        _CONFIG["current_model"] = model_id
+    except Exception:
+        pass
     return True
 
 
@@ -156,6 +168,18 @@ def reload_config(config_path: str | os.PathLike | None = None) -> dict:
         "base_url": _BASE_URL,
         "models": _MODELS,
     }
+
+
+def reload_models_list() -> None:
+    """
+    只刷新模型列表(支持新增/删除),不动当前 current_model / base_url / apiKey。
+    适合 /api/models 这种前端定期拉取模型列表的场景,避免覆盖用户刚切换的模型。
+    """
+    global _CONFIG, _PARSED, _AVAILABLE, _MODELS
+    _CONFIG = json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    _PARSED = _parse_config(_CONFIG)
+    _AVAILABLE = _PARSED["available"]
+    _MODELS = _filtered_models()
 
 
 def request(
@@ -191,3 +215,95 @@ def request(
        kwargs["extra_body"] = {"reasoning_split": True}
 
     return _client.chat.completions.create(**kwargs).choices[0].message
+
+
+# ──────────── 流式输出(MiniMax / OpenAI 兼容) ────────────
+
+class _StreamMsg:
+    """把流式 chunk 累积还原成 message 形状,供 loop 后续判断 tool_calls。"""
+    def __init__(self, content, reasoning, tool_calls):
+        self.content = content
+        self.reasoning_content = reasoning
+        self.tool_calls = tool_calls  # list 或 None
+
+
+def request_stream(
+    messages: list,
+    tools: list | None = None,
+    use_thinking: bool = True,
+):
+    """
+    流式生成器,逐步 yield 事件:
+      {'type': 'reasoning', 'text': '...'}
+      {'type': 'content',   'text': '...'}
+      {'type': 'done',      'message': <_StreamMsg>}
+    与 request() 输出语义一致,只是边收边推。
+    """
+    kwargs = dict(model=_CURRENT_MODEL, messages=messages, stream=True)
+    if tools:
+        kwargs["tools"] = tools
+        kwargs["tool_choice"] = "auto"
+    if use_thinking:
+        kwargs["extra_body"] = {"reasoning_split": True}
+
+    stream = _client.chat.completions.create(**kwargs)
+
+    content_parts: list[str]   = []
+    reasoning_parts: list[str] = []
+    tool_calls_map: dict[int, dict] = {}
+
+    for chunk in stream:
+        if not getattr(chunk, "choices", None):
+            continue
+        delta = chunk.choices[0].delta
+
+        # 思考过程(MiniMax reasoning_split 扩展)
+        r = getattr(delta, "reasoning_content", None)
+        if r:
+            reasoning_parts.append(r)
+            yield {"type": "reasoning", "text": r}
+
+        # 实际正文
+        c = getattr(delta, "content", None)
+        if c:
+            content_parts.append(c)
+            yield {"type": "content", "text": c}
+
+        # 工具调用增量:按 index 累积
+        tcs = getattr(delta, "tool_calls", None)
+        if tcs:
+            for tc in tcs:
+                idx = getattr(tc, "index", None)
+                if idx is None:
+                    continue
+                slot = tool_calls_map.setdefault(idx, {
+                    "id": "", "type": "function",
+                    "function": {"name": "", "arguments": ""},
+                })
+                if getattr(tc, "id", None):
+                    slot["id"] = tc.id
+                fn = getattr(tc, "function", None)
+                if fn:
+                    if getattr(fn, "name", None):
+                        slot["function"]["name"] = fn.name
+                    if getattr(fn, "arguments", None):
+                        slot["function"]["arguments"] += fn.arguments
+
+    # 还原成与 request() 兼容的 message 形状
+    class _TC:
+        def __init__(self, d):
+            self.id       = d["id"]
+            self.type     = d["type"]
+            self.function = type("F", (), {
+                "name":      d["function"]["name"],
+                "arguments": d["function"]["arguments"],
+            })()
+    tool_calls = [_TC(tool_calls_map[i]) for i in sorted(tool_calls_map)]
+    yield {
+        "type": "done",
+        "message": _StreamMsg(
+            content="".join(content_parts),
+            reasoning="".join(reasoning_parts),
+            tool_calls=tool_calls or None,
+        ),
+    }

@@ -58,27 +58,62 @@
   document.addEventListener('click', () => closeAllDropdowns());
 
   // ============ 侧边栏图标切换/折叠 ============
-  // 每个图标用 data-target 指向它要切换的面板(通用方案,支持左右两侧)
+  // 三个 sidebar 内部视图(资源管理器/搜索/源代码管理)互斥显示;二次点击自身则全部折叠
+  // 右边 Agent 栏(`.right`)是另一条线,继续走 Ctrl+J / 折叠
+  const INTERNAL_VIEWS = ['.sidebar', '.search-view', '.scm-view'];  // 对应三个图标
+  const INTERNAL_KEYS = ['explorer', 'search', 'scm'];
+  const INTERNAL_TITLES = { explorer: '资源管理器', search: '搜索', scm: '源代码管理' };
+  const sidebarTitleEl = document.getElementById('sidebar-header-title');
+  function setInternalView(name) {
+    // name: 'explorer' | 'search' | 'scm' | ''  (空 = 全部折叠)
+    const sidebar = document.querySelector('.sidebar');
+    if (sidebar) {
+      sidebar.classList.remove('collapsed');
+      sidebar.style.width = '';
+    }
+    // 取消所有内部视图图标的 active
+    document.querySelectorAll('.sidebar-icons [data-target]').forEach(i => {
+      if (INTERNAL_VIEWS.includes(i.dataset.target)) i.classList.remove('active');
+    });
+    // 显示目标
+    switchSidebarView(name);
+    // 标记对应图标 active + 更新 header 标题
+    if (name) {
+      const sel = INTERNAL_VIEWS[INTERNAL_KEYS.indexOf(name)];
+      document.querySelector(`.sidebar-icons [data-target="${sel}"]`)?.classList.add('active');
+      if (sidebarTitleEl) sidebarTitleEl.textContent = INTERNAL_TITLES[name] || '资源管理器';
+    } else {
+      if (sidebarTitleEl) sidebarTitleEl.textContent = '资源管理器';
+    }
+    // 侧边栏手柄
+    const handle = document.querySelector('.resize-handle[data-target=".sidebar"]');
+    if (handle) handle.style.display = name ? '' : 'none';
+  }
+
   const icons = document.querySelectorAll('.sidebar-icons [data-target]');
   icons.forEach(icon => {
     icon.addEventListener('click', () => {
       const target = icon.dataset.target;
-      // SCM 是 sidebar 内部的视图切换(显示/隐藏 explorer 与 scm-view),不走折叠
-      if (target === '.scm-view') {
-        // 先确保 sidebar 是展开的(若之前被 Ctrl+B 折叠过,先展开)
-        const sidebar = document.querySelector('.sidebar');
-        if (sidebar && sidebar.classList.contains('collapsed')) {
-          sidebar.classList.remove('collapsed');
-          sidebar.style.width = '';
-          document.querySelector('.sidebar-icons [data-target=".sidebar"]')?.classList.add('active');
+
+      // ── 内部视图分支 ──
+      const idx = INTERNAL_VIEWS.indexOf(target);
+      if (idx !== -1) {
+        const name = INTERNAL_KEYS[idx];
+        if (icon.classList.contains('active')) {
+          // 二次点击当前激活的 → 全部折叠
+          setInternalView('');
+        } else {
+          // 切换到该视图
+          setInternalView(name);
+          if (name === 'scm') loadGitStatus();
+          if (name === 'search') {
+            setTimeout(() => document.getElementById('search-input')?.focus(), 50);
+          }
         }
-        icon.classList.add('active');
-        document.querySelector('.sidebar-icons [data-target=".sidebar"]')?.classList.remove('active');
-        switchSidebarView('scm');
-        loadGitStatus();
         return;
       }
-      // 普通折叠(资源管理器 / Agent 栏)
+
+      // ── 外部面板(Agent 栏):继续走折叠逻辑 ──
       const panel = document.querySelector(target);
       if (!panel) return;
       const isCollapsed = panel.classList.toggle('collapsed');
@@ -86,25 +121,18 @@
       if (isCollapsed) panel.style.width = '';
       const handle = document.querySelector(`.resize-handle[data-target="${target}"]`);
       if (handle) handle.style.display = isCollapsed ? 'none' : '';
-      // 切回资源管理器视图
-      if (target === '.sidebar') {
-        switchSidebarView('explorer');
-      }
     });
   });
 
-  // sidebar 内部:explorer / scm 互斥显示
+  // sidebar 内部:explorer / scm / search 三选一互斥
   function switchSidebarView(which) {
     const explorerEl = document.querySelector('.sidebar .explorer');
     const scmEl      = document.getElementById('scm-view');
-    if (!explorerEl || !scmEl) return;
-    if (which === 'scm') {
-      explorerEl.style.display = 'none';
-      scmEl.style.display = '';
-    } else {
-      explorerEl.style.display = '';
-      scmEl.style.display = 'none';
-    }
+    const searchEl   = document.getElementById('search-view');
+    const show = (el, on) => { if (el) el.style.display = on ? '' : 'none'; };
+    show(explorerEl, which === 'explorer');
+    show(scmEl,      which === 'scm');
+    show(searchEl,   which === 'search');
   }
 
   // ============ 快捷键:Ctrl+B 折叠资源管理器,Ctrl+J 折叠 Agent 栏 ============
@@ -1304,8 +1332,6 @@
       <div class="center-title">CodeForge</div>
       <div class="center-sub">AI 驱动的网页编码工作台</div>
       <div class="shortcuts">
-        <div class="shortcut-row"><span class="kbd">Ctrl+P</span> 快速打开</div>
-        <div class="shortcut-row"><span class="kbd">Ctrl+Shift+P</span> 命令面板</div>
         <div class="shortcut-row"><span class="kbd">Ctrl+J</span> 切换 Agent 栏</div>
         <div class="shortcut-row"><span class="kbd">Ctrl+B</span> 切换资源管理器</div>
       </div>`;
@@ -1684,7 +1710,8 @@
           history: history,
           cwd: currentRoot || null,
           plan_model: togglePlan ? togglePlan.checked : null,
-          max_rounds: 20,
+          max_rounds: appConfig.max_round || 20,
+          flow: appConfig.flow,
         }),
       });
       if (!resp.ok || !resp.body) {
@@ -1695,6 +1722,10 @@
       const decoder = new TextDecoder('utf-8');
       let buf = '';
       let finalData = null;
+      // 流式输出:思考块 + 正文块
+      let thinkEl  = null, thinkTextEl = null;
+      let answerEl = null, answerTextEl = null;
+      let streamedAnswer = false;
 
       // SSE 解析:按 \n\n 分块,每块含 event/data 行
       while (true) {
@@ -1720,26 +1751,45 @@
             setLoadingStatus(loading, '开始运行…');
           } else if (evName === 'round') {
             setLoadingStatus(loading, '调用模型…');
+          } else if (evName === 'reasoning_delta') {
+            // 思考过程:小字、斜体、dim
+            if (!thinkEl) {
+              const built = makeStreamBubble(loading, 'msg-thinking');
+              thinkEl = built.bubble;
+              thinkTextEl = built.text;
+            }
+            thinkTextEl.textContent += evData.text;
+            scrollToBottom();
+          } else if (evName === 'content_delta') {
+            // 正文:正常样式
+            if (!answerEl) {
+              const built = makeStreamBubble(loading, 'msg-assistant msg-stream-answer');
+              answerEl = built.bubble;
+              answerTextEl = built.text;
+            }
+            answerTextEl.textContent += evData.text;
+            streamedAnswer = true;
+            scrollToBottom();
           } else if (evName === 'tool_call') {
             lastTool = evData.name;
             setLoadingStatus(loading, `调用工具: ${lastTool}`);
-            // 把这条工具调用即时插入到聊天流里(在 loading 之前)
             const tc = { function: { name: evData.name, arguments: JSON.stringify(evData.args || {}) } };
             insertBeforeLoading(loading, () => appendToolCallRaw(tc));
           } else if (evName === 'tool_result') {
             setLoadingStatus(loading,
               `${lastTool} → ${evData.ok ? '成功' : '失败'}`);
-            // 工具结果也即时插入
             const m = { content: evData.content || '' };
             insertBeforeLoading(loading, () => appendToolResultRaw(m));
           } else if (evName === 'pending') {
             setLoadingStatus(loading, '等待用户确认');
           } else if (evName === 'diff_updated') {
             diffsThisTurn++;
-            // 文件工具完成 → 刷新 diff viewer
             setDiffFiles(evData.files || []);
           } else if (evName === 'done') {
             finalData = evData;
+            // 收到 done:停掉流光标
+            if (answerEl) answerEl.parentElement?.classList.add('msg-stream-done');
+            if (thinkEl)  thinkEl.parentElement?.classList.add('msg-stream-done');
           } else if (evName === 'error') {
             throw new Error(evData.message || '流式错误');
           }
@@ -1766,7 +1816,8 @@
       // 5. 如果最后一轮没有 tool_call 且有 answer 文本,显示
       const lastAssistant = [...history].reverse().find(m => m.role === 'assistant');
       if (lastAssistant && !Array.isArray(lastAssistant.tool_calls) && lastAssistant.content
-          && finalData.stopped === 'answer') {
+          && finalData.stopped === 'answer' && !streamedAnswer) {
+        // 流式输出已在界面渲染;非流式才追加
         appendMessage('assistant', lastAssistant.content);
       }
 
@@ -1804,6 +1855,28 @@
     const node = buildNode();
     aiMessages.insertBefore(node, loadingEl);
     scrollToBottom();
+  }
+  // 流式输出:在 loading 上方建一个气泡(返回 {bubble, text} 用于持续 append)
+  function makeStreamBubble(loadingEl, extraClass) {
+    const div = document.createElement('div');
+    div.className = `msg ${extraClass || ''}`;
+    const label = document.createElement('div');
+    label.className = 'msg-label';
+    label.textContent = (extraClass && extraClass.includes('thinking')) ? '💭 思考中' : 'Assistant';
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    const text = document.createElement('div');
+    text.className = 'msg-stream-text';
+    bubble.appendChild(text);
+    div.appendChild(label);
+    div.appendChild(bubble);
+    if (loadingEl) {
+      aiMessages.insertBefore(div, loadingEl);
+    } else {
+      aiMessages.appendChild(div);
+    }
+    scrollToBottom();
+    return { bubble, text };
   }
   // 流式插入用的两个原始构造器,跟 appendToolCall/appendToolResult 等价但不依赖外部状态
   function appendToolCallRaw(tc) {
@@ -2137,6 +2210,93 @@
   loadChat();
   loadAgentState();
   loadDiffList();        // diff viewer 初始为空列表(后端清空状态)
+
+  // 应用配置(流式输出开关、轮数上限) — 来自 .config.json
+  let appConfig = { flow: false, max_round: 20 };
+  fetch('/api/config').then(r => r.json()).then(d => {
+    if (d && d.ok) appConfig = { flow: !!d.flow, max_round: d.max_round || 20 };
+  }).catch(() => {});
+
+  // ──────── 全局搜索 ────────
+  const searchInputEl   = document.getElementById('search-input');
+  const searchResultsEl = document.getElementById('search-results');
+  const searchMetaEl    = document.getElementById('search-meta');
+  let searchBusy = false;
+  let searchTimer = null;
+
+  function escapeReg(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+  function highlight(text, q) {
+    if (!q) return escapeHtml(text);
+    const re = new RegExp(escapeReg(q), 'gi');
+    return escapeHtml(text).replace(re, m => `<mark>${m}</mark>`);
+  }
+
+  async function runSearch(q) {
+    q = (q || '').trim();
+    if (!q) {
+      searchResultsEl.innerHTML = `<div class="search-empty">输入关键字开始搜索</div>`;
+      searchMetaEl.textContent = '';
+      return;
+    }
+    if (searchBusy) return;
+    searchBusy = true;
+    searchMetaEl.textContent = '搜索中…';
+    try {
+      const cwd = currentRoot || '';
+      const r = await fetch('/api/search?q=' + encodeURIComponent(q)
+        + (cwd ? '&path=' + encodeURIComponent(cwd) : ''));
+      const d = await r.json();
+      if (!d.ok) {
+        searchResultsEl.innerHTML = `<div class="search-empty">⚠ ${escapeHtml(d.error || '搜索失败')}</div>`;
+        searchMetaEl.textContent = '';
+        return;
+      }
+      if (!d.results.length) {
+        searchResultsEl.innerHTML = `<div class="search-empty">无匹配结果</div>`;
+        searchMetaEl.textContent = '0 条';
+        return;
+      }
+      searchMetaEl.textContent = `${d.total} 条${d.truncated ? ' (已截断)' : ''}`;
+      const html = d.results.map(r => {
+        const fullPath = (d.root + '/' + r.path).replace(/[\\/]/g, '/');
+        return `<div class="search-result" data-path="${escapeHtml(fullPath)}" data-line="${r.line}">
+          <div class="sr-path"><span class="sr-line">${r.line}</span>${escapeHtml(r.path)}</div>
+          <div class="sr-snippet">${highlight(r.snippet, q)}</div>
+        </div>`;
+      }).join('');
+      searchResultsEl.innerHTML = html;
+      searchResultsEl.querySelectorAll('.search-result').forEach(row => {
+        row.addEventListener('click', () => {
+          const p = row.dataset.path;
+          const ln = parseInt(row.dataset.line, 10);
+          openFile(p, ln);
+        });
+      });
+    } catch (e) {
+      searchResultsEl.innerHTML = `<div class="search-empty">⚠ ${escapeHtml(String(e))}</div>`;
+      searchMetaEl.textContent = '';
+    } finally {
+      searchBusy = false;
+    }
+  }
+
+  if (searchInputEl) {
+    searchInputEl.addEventListener('input', () => {
+      clearTimeout(searchTimer);
+      const q = searchInputEl.value;
+      searchTimer = setTimeout(() => runSearch(q), 250);
+    });
+    searchInputEl.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        clearTimeout(searchTimer);
+        runSearch(searchInputEl.value);
+      } else if (e.key === 'Escape') {
+        searchInputEl.value = '';
+        runSearch('');
+      }
+    });
+  }
 
   // ============ 主题切换 ============
   const THEME_KEY = 'codeforge.theme';

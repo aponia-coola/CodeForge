@@ -1,8 +1,11 @@
+import json
 import os
+from pathlib import Path
 
 from flask import Flask, jsonify, request as flask_request, Response
 
 from explorer.file import list_dir, create as file_create
+from explorer.search import search as file_search
 from models.request import (
     get_models,
     get_current_model,
@@ -15,6 +18,35 @@ from agent import diff as agent_diff
 from git import engine as agent_git
 
 app = Flask(__name__)
+
+
+# ════════════════════════════════════════════════════════════
+#                      应用配置(.config.json)
+# ════════════════════════════════════════════════════════════
+
+_CONFIG_PATH = Path(__file__).resolve().parent / ".config.json"
+
+def _read_app_config() -> dict:
+    """读 .config.json,出错/缺字段则给默认。"""
+    try:
+        return json.loads(_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+_APP_CFG = _read_app_config()
+
+def _to_bool(v, default: bool = False) -> bool:
+    """容错地把 'true'/'false' 字符串 / bool 转成 bool。"""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ('true', '1', 'yes', 'on')
+    if v is None:
+        return default
+    return bool(v)
+
+FLOW: bool     = _to_bool(_APP_CFG.get('flow'),  False)
+MAX_ROUND_CFG: int = int(_APP_CFG.get('max_round', 20))
 
 
 # ════════════════════════════════════════════════════════════
@@ -46,7 +78,12 @@ def index():
 # ============ API ============
 @app.get('/api/models')
 def api_models():
-    """返回模型列表 + 当前激活的模型。"""
+    """
+    返回模型列表 + 当前激活的模型。
+    只刷新模型列表(支持新增/删除),不动 current_model,这样用户的热切换选择不会被覆盖。
+    """
+    from models.request import reload_models_list
+    reload_models_list()
     return jsonify({
         "current": get_current_model(),
         "models": get_models(),
@@ -117,6 +154,39 @@ def api_chat():
         "ok":      True,
         "history": _HISTORY,
         "state":   agent_state.snapshot(),
+    })
+
+
+# ════════════════════════════════════════════════════════════
+#                      全局文件内容搜索
+# ════════════════════════════════════════════════════════════
+
+@app.get('/api/search')
+def api_search():
+    """全局搜索(子串,大小写不敏感)。Query: ?q=&path= """
+    q    = (flask_request.args.get('q') or '').strip()
+    path = (flask_request.args.get('path') or '').strip() or os.path.expanduser('~')
+    try:
+        result = file_search(path, q)
+        result['ok'] = True
+        return jsonify(result)
+    except FileNotFoundError as e:
+        return jsonify({"ok": False, "error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# ════════════════════════════════════════════════════════════
+#                      应用配置查询
+# ════════════════════════════════════════════════════════════
+
+@app.get('/api/config')
+def api_config():
+    """返回前端需要的全局开关(流式输出、轮数上限等)。"""
+    return jsonify({
+        "ok":       True,
+        "flow":     FLOW,
+        "max_round": MAX_ROUND_CFG,
     })
 
 
@@ -215,6 +285,7 @@ def api_chat_stream():
     max_rounds = int(data.get("max_rounds") or 20)
     plan_model = data.get("plan_model")
     cwd        = (data.get("cwd") or "").strip() or None
+    use_flow   = bool(data.get("flow", FLOW))  # body 缺省取 .config.json 的 FLOW
 
     def sse(event: str, payload: dict) -> str:
         return f"event: {event}\ndata: {_json.dumps(payload, ensure_ascii=False)}\n\n"
@@ -229,6 +300,7 @@ def api_chat_stream():
                 max_rounds=max_rounds,
                 plan_model=plan_model,
                 cwd=cwd,
+                use_flow=use_flow,
             ):
                 kind = ev.pop("event", "message")
                 if kind == "done":

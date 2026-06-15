@@ -1,5 +1,5 @@
 {
-  "current_model": "MiniMax-M3",
+  "current_model": "deepseek-v4-flash",
   "models": [
     {
       "id": "MiniMax-M3",
@@ -17,7 +17,7 @@
       "vendor": "DeepSeek",
       "apiKey": "sk-REPLACE-WITH-YOUR-DEEPSEEK-KEY",
       "url": "https://api.deepseek.com/v1/chat/completions",
-      "maxInputTokens": 128000,
+      "maxInputTokens": 1000000,
       "maxOutputTokens": 8192,
       "supportsToolCall": true
     },
@@ -30,7 +30,22 @@
       "maxInputTokens": 128000,
       "maxOutputTokens": 8192,
       "supportsToolCall": true
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "name": "DeepSeek V4 Flash",
+      "vendor": "DeepSeek",
+      "apiKey": "sk-bee14d7b476f44eb91452e8aa8cb6c33",
+      "url": "https://api.deepseek.com/v1/chat/completions",
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 8192,
+      "supportsToolCall": true
     }
   ],
-  "availableModels": ["MiniMax-M3", "deepseek-v4-pro", "glm-4.7flash"]
+  "availableModels": [
+    "MiniMax-M3",
+    "deepseek-v4-flash",
+    "glm-4.7flash",
+    "deepseek-v4-pro"
+  ]
 }

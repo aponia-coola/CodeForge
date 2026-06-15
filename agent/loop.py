@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from agent import state, tool, diff
-from models.request import request as model_request
+from models.request import request as model_request, request_stream as model_request_stream
 
 
 _PROMPT_PATH = Path(__file__).resolve().parent / "prompt.json"
@@ -135,6 +135,7 @@ def run_stream(
     max_rounds: int = 20,
     plan_model: bool | None = None,
     cwd: str | None = None,
+    use_flow: bool = False,
 ):
     """
     流式运行 Agent,每步 yield 一个事件 dict(供 SSE 推送给前端)。
@@ -175,7 +176,18 @@ def run_stream(
             yield {"event": "round", "round": r + 1, "max": max_rounds}
 
             try:
-                msg = model_request(messages=messages, tools=tools)
+                msg = None
+                if use_flow:
+                    # 流式:边收边 yield reasoning / content 增量
+                    for ev in model_request_stream(messages=messages, tools=tools):
+                        if ev["type"] == "reasoning":
+                            yield {"event": "reasoning_delta", "text": ev["text"]}
+                        elif ev["type"] == "content":
+                            yield {"event": "content_delta",   "text": ev["text"]}
+                        elif ev["type"] == "done":
+                            msg = ev["message"]
+                else:
+                    msg = model_request(messages=messages, tools=tools)
             except Exception as e:
                 yield {
                     "event":     "done",
