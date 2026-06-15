@@ -1,10 +1,11 @@
 """
 追踪 Agent 对文件的改动,生成 unified diff 供前端展示。
 - 在文件工具(create/edit/remove)执行前后抓取内容,存到 _DIFFS。
-- 提供 list / get / clear 接口。
+- 提供 list / get / clear / revert 接口。
 - 同名文件多次修改保留最早的 "old"、最新的 "new"。
 """
 import difflib
+import os
 from typing import Optional
 
 from explorer import file as _file
@@ -83,6 +84,45 @@ def get_diff(path: str) -> Optional[dict]:
         else:
             lines.append({"type": "ctx", "text": ln})
     return {"path": path, "name": name, "op": d["op"], "lines": lines}
+
+
+def get_baseline(path: str) -> Optional[str]:
+    """返回 agent 改动前的原文(用于编辑器红绿高亮的基线)。没有 diff 记录返回 None。"""
+    if path not in _DIFFS:
+        return None
+    return _DIFFS[path].get("old")
+
+
+def revert(path: str) -> dict:
+    """
+    把单个文件恢复到 agent 改动前的状态。
+    - old is None(agent 新建的文件):删除该文件
+    - new is None(agent 删除的文件):把 old 写回
+    - 普通 edit:把 old 写回
+    返回 {"ok": True, "op": "..."} 或 {"ok": False, "error": "..."}。
+    成功后从 _DIFFS 移除该条目。
+    """
+    if path not in _DIFFS:
+        return {"ok": False, "error": "该文件没有可撤销的改动"}
+    d = _DIFFS[path]
+    old, op = d["old"], d["op"]
+    try:
+        if old is None:
+            # agent 新建的文件 → 删除
+            if os.path.exists(path):
+                os.remove(path)
+        else:
+            # agent 编辑/删除的文件 → 写回旧内容(确保目录存在)
+            dpath = os.path.dirname(path)
+            if dpath and not os.path.exists(dpath):
+                os.makedirs(dpath, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fp:
+                fp.write(old)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    # 恢复成功,从 diff 池移除
+    _DIFFS.pop(path, None)
+    return {"ok": True, "op": op}
 
 
 def clear(path: str | None = None) -> None:

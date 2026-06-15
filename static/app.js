@@ -618,6 +618,9 @@
   const diffViewerEl = document.getElementById('diff-viewer');
   const diffTabsEl   = document.getElementById('diff-tabs');
   const diffBodyEl   = document.getElementById('diff-body');
+  const diffFooterEl = document.getElementById('diff-footer');
+  const diffKeepBtn  = document.getElementById('diff-keep-btn');
+  const diffDiscardBtn = document.getElementById('diff-discard-btn');
   const welcomeEl    = document.getElementById('center-welcome');
   const centerEl     = document.querySelector('.center');
   let diffFiles   = [];           // [{path, name, op}]
@@ -666,9 +669,12 @@
     diffTabsEl.innerHTML = '';
     const hasFiles = diffFiles.length > 0;
     // 切显示:有改动 → 显示 diff viewer;没有 → 显示主页
-    if (diffViewerEl) diffViewerEl.style.display = hasFiles ? '' : 'none';
-    if (welcomeEl)    welcomeEl.style.display    = hasFiles ? 'none' : '';
-    if (centerEl)     centerEl.classList.toggle('diff-mode', hasFiles);
+    if (hasFiles) {
+      showCenter('diff');
+    } else {
+      showCenter('welcome');
+    }
+    if (diffFooterEl) diffFooterEl.style.display = hasFiles ? '' : 'none';
     for (const f of diffFiles) {
       const tab = document.createElement('div');
       tab.className = 'diff-tab op-' + f.op + (f.path === diffActive ? ' active' : '');
@@ -742,6 +748,40 @@
     if (!diffBodyEl) return;
     diffBodyEl.innerHTML = '';
   }
+
+  // ── diff footer 按钮 ──
+  // 保留:关闭 diff viewer 回到主页(改动保留在磁盘上)
+  if (diffKeepBtn) diffKeepBtn.addEventListener('click', () => {
+    setDiffFiles([]);
+    appendStatus('已保留改动');
+  });
+
+  // 撤销:把当前选中文件恢复到 agent 改动前
+  if (diffDiscardBtn) diffDiscardBtn.addEventListener('click', async () => {
+    if (!diffActive) { appendStatus('没有可撤销的文件'); return; }
+    const target = diffActive;
+    if (!confirm(`撤销对 ${target.split(/[\\\/]/).pop()} 的改动?文件会恢复到 agent 改动前。`)) return;
+    try {
+      const r = await fetch('/api/diff/revert', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path: target}),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        appendStatus(`已撤销 ${target.split(/[\\\/]/).pop()}`);
+        setDiffFiles(d.files || []);
+        // 强制刷新文件树:清签名再 poll
+        treeSignature.clear();
+        pollPath(currentRoot);
+        for (const p of expandedFolders) pollPath(p);
+      } else {
+        appendStatus(`撤销失败:${d.error || '未知错误'}`);
+      }
+    } catch (e) {
+      appendStatus(`撤销失败:${String(e)}`);
+    }
+  });
 
   // ──────── SCM(源代码管理) ────────
   const scmBranchEl  = document.getElementById('scm-branch');
@@ -949,9 +989,7 @@
   }
   function renderGitDiffInline(path, diffText) {
     if (!diffViewerEl) return;
-    centerEl?.classList.add('diff-mode');
-    if (welcomeEl) welcomeEl.style.display = 'none';
-    if (diffViewerEl) diffViewerEl.style.display = '';
+    showCenter('diff');
     const name = path.split(/[\\/]/).pop();
     diffFiles = [{ path: '[git] ' + path, name, op: 'edit' }];
     diffActive = diffFiles[0].path;
@@ -1124,7 +1162,23 @@
   }
 
   const center = document.querySelector('.center');
+  const editorHost = document.getElementById('editor-host');
   let currentEditor = null;  // {cm, path, name, saved}
+
+  // 三态切换:welcome(主页) / editor(编辑器) / diff(diff viewer)
+  // 只切 display,不销毁 DOM,确保 diff-viewer / welcome 引用始终有效
+  function showCenter(mode) {
+    const wel = document.getElementById('center-welcome');
+    const eh  = editorHost;
+    const dv  = document.getElementById('diff-viewer');
+    if (wel) wel.style.display = (mode === 'welcome') ? '' : 'none';
+    if (eh)  eh.style.display  = (mode === 'editor')  ? '' : 'none';
+    if (dv)  dv.style.display  = (mode === 'diff')    ? '' : 'none';
+    if (mode === 'editor') center.classList.add('editor-mode');
+    else center.classList.remove('editor-mode');
+    if (mode === 'diff') center.classList.add('diff-mode');
+    else center.classList.remove('diff-mode');
+  }
 
   // 文件扩展名 → CodeMirror mode 映射(未列出的走纯文本)
   const MODE_MAP = {
@@ -1160,8 +1214,8 @@
 
   function openFileInEditor(filePath) {
     if (!center) return;
-    center.classList.add('editor-mode');
-    center.innerHTML = '<div class="editor-loading">加载中...</div>';
+    showCenter('editor');
+    if (editorHost) editorHost.innerHTML = '<div class="editor-loading">加载中...</div>';
     fetch(`/api/file/read?path=${encodeURIComponent(filePath)}`)
       .then(r => r.json().then(data => ({ status: r.status, data })))
       .then(({ status, data }) => {
@@ -1175,9 +1229,49 @@
   }
 
   function renderEditor(file) {
-    if (!center) return;
-    center.classList.add('editor-mode');
-    center.innerHTML = '';
+    if (!center || !editorHost) return;
+    showCenter('editor');
+    editorHost.innerHTML = '';
+
+    // 顶部 tab 栏:只显示 agent 改动过的文件(有 diff 记录的)
+    const agentChanged = diffFiles.filter(f => !f.path.startsWith('[git]'));
+    if (agentChanged.length > 0) {
+      const tabBar = document.createElement('div');
+      tabBar.className = 'editor-tabs';
+      for (const f of agentChanged) {
+        const tab = document.createElement('div');
+        tab.className = 'editor-tab' + (f.path === file.path ? ' active' : '');
+        tab.dataset.path = f.path;
+        const tabName = document.createElement('span');
+        tabName.className = 'editor-tab-name';
+        tabName.textContent = f.name;
+        tab.appendChild(tabName);
+        const tabClose = document.createElement('span');
+        tabClose.className = 'editor-tab-close';
+        tabClose.textContent = '×';
+        tabClose.title = '关闭';
+        tabClose.addEventListener('click', e => {
+          e.stopPropagation();
+          // 从 diff 列表移除该文件的视图
+          const next = diffFiles.filter(x => x.path !== f.path);
+          setDiffFiles(next);
+          // 如果关的是当前文件,切到第一个 tab 或回主页
+          if (f.path === file.path) {
+            if (next.length > 0 && !next[0].path.startsWith('[git]')) {
+              openFileInEditor(next[0].path);
+            } else {
+              showCenterEmpty();
+            }
+          }
+        });
+        tab.appendChild(tabClose);
+        tab.addEventListener('click', () => {
+          if (f.path !== file.path) openFileInEditor(f.path);
+        });
+        tabBar.appendChild(tab);
+      }
+      editorHost.appendChild(tabBar);
+    }
 
     const header = document.createElement('div');
     header.className = 'editor-header';
@@ -1209,8 +1303,31 @@
     const cmHost = document.createElement('div');
     cmHost.className = 'editor-cm-host';
 
-    center.appendChild(header);
-    center.appendChild(cmHost);
+    editorHost.appendChild(header);
+    editorHost.appendChild(cmHost);
+
+    // 编辑器底部 footer:只在有 agent 改动时显示
+    const footer = document.createElement('div');
+    footer.className = 'editor-footer';
+    footer.style.display = 'none';   // 默认隐藏,拉到 baseline 后才显示
+    const fileMeta = document.createElement('span');
+    fileMeta.className = 'editor-footer-meta';
+    fileMeta.textContent = file.path;
+    const actions = document.createElement('div');
+    actions.className = 'editor-actions';
+    const keepBtn = document.createElement('button');
+    keepBtn.className = 'ef-keep';
+    keepBtn.textContent = '✓ 保留';
+    keepBtn.title = '保存改动 (Ctrl+S)';
+    const discardBtn = document.createElement('button');
+    discardBtn.className = 'ef-discard';
+    discardBtn.textContent = '⟲ 撤销';
+    discardBtn.title = '丢弃当前未保存改动';
+    actions.appendChild(keepBtn);
+    actions.appendChild(discardBtn);
+    footer.appendChild(fileMeta);
+    footer.appendChild(actions);
+    editorHost.appendChild(footer);
 
     const mode = modeFor(file.name);
     const cm = CodeMirror(cmHost, {
@@ -1241,13 +1358,168 @@
     let dirty = false;
     setStatus(saved, dirty, file.size);
 
+    // ── agent 改动基线:从后端拉 agent 改动前的原文 ──
+    let agentBaseline = null;
+    fetch('/api/diff/baseline?path=' + encodeURIComponent(file.path))
+      .then(r => r.json())
+      .then(d => {
+        if (d.ok && typeof d.baseline === 'string') {
+          agentBaseline = d.baseline;
+          applyAgentDiff();
+          footer.style.display = '';  // 有 agent 改动 → 显示底部 footer
+        }
+      })
+      .catch(() => {});
+
+    // agent 改动高亮:用 baseline 和当前编辑器内容做 LCS,绿色标记 agent 新增行
+    const _agentMarks = [];
+    function clearAgentDiff() {
+      _agentMarks.forEach(h => { try { cm.removeLineClass(h, 'background', 'cm-line-agent'); } catch(e){} });
+      _agentMarks.length = 0;
+    }
+    function applyAgentDiff() {
+      clearAgentDiff();
+      if (agentBaseline === null) return;
+      const cur = cm.getValue();
+      if (cur === agentBaseline) return;
+      const d = lineLcsDiff(agentBaseline, cur);
+      d.added.forEach(ln => {
+        const h = cm.getLineHandle(ln);
+        if (h) {
+          cm.addLineClass(h, 'background', 'cm-line-agent');
+          _agentMarks.push(h);
+        }
+      });
+    }
+
+    // ── 用户手编辑的 diff 高亮(LCS 找 added / removed) ──
+    function lineLcsDiff(a, b) {
+      const aLines = a.split('\n');
+      const bLines = b.split('\n');
+      const n = aLines.length, m = bLines.length;
+      if (n * m > 2_000_000) return { added: [], removed: [] };  // 性能护栏
+      const dp = Array.from({length: n + 1}, () => new Uint32Array(m + 1));
+      for (let i = 1; i <= n; i++) {
+        for (let j = 1; j <= m; j++) {
+          if (aLines[i-1] === bLines[j-1]) dp[i][j] = dp[i-1][j-1] + 1;
+          else dp[i][j] = dp[i-1][j] >= dp[i][j-1] ? dp[i-1][j] : dp[i][j-1];
+        }
+      }
+      const added = [], removed = [];
+      let i = n, j = m;
+      while (i > 0 && j > 0) {
+        if (aLines[i-1] === bLines[j-1]) { i--; j--; }
+        else if (dp[i-1][j] >= dp[i][j-1]) { removed.push(i-1); i--; }
+        else { added.push(j-1); j--; }
+      }
+      while (i > 0) { removed.push(i-1); i--; }
+      while (j > 0) { added.push(j-1); j--; }
+      return { added, removed };
+    }
+    const _edMarks = { added: [], removed: [], gutter: [] };
+    function clearLineDiff() {
+      _edMarks.added.forEach(h => { try { cm.removeLineClass(h, 'background', 'cm-line-added'); } catch(e){} });
+      _edMarks.removed.forEach(h => { try { cm.removeLineClass(h, 'background', 'cm-line-removed'); } catch(e){} });
+      _edMarks.gutter.forEach(h => { try { cm.setGutterMarker(h, 'CodeMirror-linenumbers', null); } catch(e){} });
+      _edMarks.added = []; _edMarks.removed = []; _edMarks.gutter = [];
+    }
+    function applyLineDiff() {
+      clearLineDiff();
+      if (cm.getValue() === saved) return;
+      const d = lineLcsDiff(saved, cm.getValue());
+      d.added.forEach(ln => {
+        const h = cm.getLineHandle(ln);
+        if (h) {
+          cm.addLineClass(h, 'background', 'cm-line-added');
+          _edMarks.added.push(h);
+        }
+      });
+      // 删掉的行不在 current 中,在它们原位置前一行加 gutter 红色 − 标记
+      d.removed.forEach(ln => {
+        const at = Math.max(0, ln - 1);
+        const h = cm.getLineHandle(at);
+        if (h) {
+          const marker = document.createElement('span');
+          marker.className = 'cm-gutter-removed';
+          marker.textContent = '−';
+          marker.title = '此行上方被删除了 1 行';
+          cm.setGutterMarker(h, 'CodeMirror-linenumbers', marker);
+          _edMarks.gutter.push(h);
+        }
+      });
+    }
+
     cm.on('change', () => {
       const v = cm.getValue();
       if (v === saved) {
-        if (dirty) { dirty = false; setStatus(saved, dirty, file.size); }
+        if (dirty) { dirty = false; setStatus(saved, dirty, file.size); clearLineDiff(); }
       } else {
         if (!dirty) { dirty = true; setStatus(saved, dirty, file.size); }
+        applyLineDiff();
       }
+    });
+
+    keepBtn.addEventListener('click', () => {
+      // 保留 = 接受改动:清除 agent diff 高亮 + 后端 diff 记录
+      if (agentBaseline !== null) {
+        agentBaseline = null;
+        clearAgentDiff();
+        // 后端清除该文件的 diff 记录
+        fetch('/api/diff/clear', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({path: file.path}),
+        }).catch(() => {});
+        appendStatus('已保留 AI 改动');
+      }
+      // 同时有用户手编辑 → 保存
+      if (dirty) save();
+    });
+    discardBtn.addEventListener('click', () => {
+      // 有 agent 改动 → 撤销 agent 改动(恢复到 baseline)
+      if (agentBaseline !== null) {
+        if (!confirm('撤销 AI 对此文件的改动?恢复到 AI 修改前。')) return;
+        fetch('/api/diff/revert', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({path: file.path}),
+        })
+          .then(r => r.json())
+          .then(d => {
+            if (d.ok) {
+              // 重新读文件
+              fetch('/api/file/read?path=' + encodeURIComponent(file.path))
+                .then(r2 => r2.json())
+                .then(d2 => {
+                  if (d2.ok) {
+                    saved = d2.content;
+                    cm.setValue(d2.content);
+                    agentBaseline = null;
+                    clearAgentDiff();
+                    clearLineDiff();
+                    dirty = false;
+                    setStatus(saved, dirty, d2.size);
+                    appendStatus('已撤销 AI 改动');
+                    // 刷新文件树
+                    treeSignature.clear();
+                    pollPath(currentRoot);
+                    for (const p of expandedFolders) pollPath(p);
+                  }
+                });
+            } else {
+              appendStatus('撤销失败: ' + (d.error || '未知错误'));
+            }
+          })
+          .catch(e => appendStatus('撤销失败: ' + e));
+        return;
+      }
+      // 否则:撤销用户手编辑
+      if (!dirty) { appendStatus('没有改动可撤销'); return; }
+      if (!confirm('丢弃当前所有未保存改动?回到上次保存的状态。')) return;
+      cm.setValue(saved);
+      clearLineDiff();
+      setStatus(saved, dirty, file.size);
+      appendStatus('已撤销到上次保存');
     });
 
     function setStatus(s, d, sz) {
@@ -1318,23 +1590,16 @@
   }
 
   function renderCenterError(msg) {
-    if (!center) return;
-    center.classList.add('editor-mode');
-    center.innerHTML = `<div class="editor-error">读取失败: ${escapeHtml(msg)}</div>`;
+    if (!center || !editorHost) return;
+    showCenter('editor');
+    editorHost.innerHTML = `<div class="editor-error">读取失败: ${escapeHtml(msg)}</div>`;
   }
 
   function showCenterEmpty() {
     if (!center) return;
-    center.classList.remove('editor-mode');
-    // 恢复空状态(完全复制 index.html 里的结构)
-    center.innerHTML = `
-      <div class="center-icon">&lt;/&gt;</div>
-      <div class="center-title">CodeForge</div>
-      <div class="center-sub">AI 驱动的网页编码工作台</div>
-      <div class="shortcuts">
-        <div class="shortcut-row"><span class="kbd">Ctrl+J</span> 切换 Agent 栏</div>
-        <div class="shortcut-row"><span class="kbd">Ctrl+B</span> 切换资源管理器</div>
-      </div>`;
+    showCenter('welcome');
+    if (editorHost) editorHost.innerHTML = '';
+    currentEditor = null;
   }
 
   function formatSize(n) {
@@ -1625,13 +1890,20 @@
 
   // 把视线拉到 diff viewer:重新拉后端列表(把之前隐藏的也带回来),滚动到顶 + tab 闪一下
   async function focusDiffViewer() {
-    await loadDiffList();            // 后端 diff 列表(可能含被隐藏但未清的)
-    if (diffBodyEl) diffBodyEl.scrollTop = 0;
-    const tabs = diffTabsEl;
-    if (!tabs) return;
-    tabs.classList.remove('flash');
-    void tabs.offsetWidth;           // 强制 reflow,重新触发动画
-    tabs.classList.add('flash');
+    try {
+      await loadDiffList();            // 后端 diff 列表 → setDiffFiles → renderDiffTabs → showCenter('diff')
+    } catch (e) { /* 静默 */ }
+    if (diffFiles.length > 0) {
+      if (diffBodyEl) diffBodyEl.scrollTop = 0;
+      const tabs = diffTabsEl;
+      if (tabs) {
+        tabs.classList.remove('flash');
+        void tabs.offsetWidth;
+        tabs.classList.add('flash');
+      }
+    } else {
+      appendStatus('没有可查看的改动');
+    }
   }
 
   function scrollToBottom() {
@@ -1698,7 +1970,7 @@
 
     // 跟踪当前 round/max,用来拼状态文字
     let roundNow = 0, roundMax = 0, lastTool = '';
-    // 本轮新增的 diff 数量(只数本轮新改的文件,不看历史累计)
+    // 本轮改动的文件数(直接用后端 diff 列表长度,已按路径去重)
     let diffsThisTurn = 0;
 
     try {
@@ -1783,7 +2055,7 @@
           } else if (evName === 'pending') {
             setLoadingStatus(loading, '等待用户确认');
           } else if (evName === 'diff_updated') {
-            diffsThisTurn++;
+            diffsThisTurn = (evData.files || []).length;
             setDiffFiles(evData.files || []);
           } else if (evName === 'done') {
             finalData = evData;

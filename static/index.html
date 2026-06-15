@@ -157,7 +157,7 @@
   <!-- 左侧文件树宽度拖拽手柄 -->
   <div class="resize-handle" data-target=".sidebar" data-direction="left" title="拖动调整宽度"></div>
 
-  <!-- 中间:diff viewer / 主页 -->
+  <!-- 中间:welcome / editor-host / diff viewer 三态切换 -->
   <div class="center">
     <div class="center-welcome" id="center-welcome">
       <div class="center-icon">&lt;/&gt;</div>
@@ -168,9 +168,14 @@
         <div class="shortcut-row"><span class="kbd">Ctrl+B</span> 切换资源管理器</div>
       </div>
     </div>
+    <div class="editor-host" id="editor-host" style="display:none;"></div>
     <div class="diff-viewer" id="diff-viewer" style="display:none;">
       <div class="diff-tabs" id="diff-tabs"></div>
       <div class="diff-body"  id="diff-body"></div>
+      <div class="diff-footer" id="diff-footer" style="display:none;">
+        <button class="diff-btn-keep"    id="diff-keep-btn">✓ 保留</button>
+        <button class="diff-btn-discard" id="diff-discard-btn">⟲ 撤销</button>
+      </div>
     </div>
   </div>
 

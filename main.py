@@ -355,12 +355,37 @@ def api_diff():
     return jsonify({"ok": True, **d})
 
 
+@app.get('/api/diff/baseline')
+def api_diff_baseline():
+    """返回 agent 改动前的原文(用于编辑器红绿高亮基线)。"""
+    path = (flask_request.args.get('path') or '').strip()
+    if not path:
+        return jsonify({"ok": False, "error": "缺少 path"}), 400
+    baseline = agent_diff.get_baseline(path)
+    if baseline is None:
+        return jsonify({"ok": False}), 404
+    return jsonify({"ok": True, "baseline": baseline})
+
+
 @app.post('/api/diff/clear')
 def api_diff_clear():
     """清空 diff(path=None 清全部)。Body: {"path": "..."} 或空"""
     data = flask_request.get_json(silent=True) or {}
     path = (data.get("path") or "").strip() or None
     agent_diff.clear(path)
+    return jsonify({"ok": True, "files": agent_diff.list_pending()})
+
+
+@app.post('/api/diff/revert')
+def api_diff_revert():
+    """撤销单个文件的 agent 改动,恢复到改动前。Body: {"path": "..."}"""
+    data = flask_request.get_json(silent=True) or {}
+    path = (data.get("path") or "").strip()
+    if not path:
+        return jsonify({"ok": False, "error": "缺少 path"}), 400
+    res = agent_diff.revert(path)
+    if not res.get("ok"):
+        return jsonify(res), 400
     return jsonify({"ok": True, "files": agent_diff.list_pending()})
 
 
