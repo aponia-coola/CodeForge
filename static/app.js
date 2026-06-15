@@ -1346,14 +1346,14 @@
   function toggleFolder(rowEl, folder) {
     const isExpanded = expandedFolders.has(folder.path);
 
-    // input 模式下,点击 folder = "选中":把该 folder 的路径写入 input 与 path 条,
-    // 这样点确定就能打开它,不必手敲路径。展开/折叠照旧,方便浏览。
+    // 点击 folder = "选中":无论是否在 input 模式,都把该 folder 路径同步到:
+    //   1) input 框(input 已打开时)
+    //   2) 路径栏文字
+    // 这样点确定就能打开它,不必先点小齿轮进 input 模式,也不必手敲路径。
     const liveInput = explorer.querySelector('.explorer-path-input');
-    if (liveInput) {
-      liveInput.value = folder.path;
-      const livePathText = explorer.querySelector('.explorer-path-text');
-      if (livePathText) livePathText.textContent = folder.path;
-    }
+    if (liveInput) liveInput.value = folder.path;
+    const livePathText = explorer.querySelector('.explorer-path-text');
+    if (livePathText) livePathText.textContent = folder.path;
 
     if (isExpanded) {
       // 收起:移除紧随其后的子层
