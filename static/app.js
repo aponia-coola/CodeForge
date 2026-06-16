@@ -2143,12 +2143,12 @@
             lastTool = evData.name;
             setLoadingStatus(loading, `调用工具: ${lastTool}`);
             const tc = { function: { name: evData.name, arguments: JSON.stringify(evData.args || {}) } };
-            insertBeforeAnswer(answerEl, loading, () => appendToolCallRaw(tc));
+            insertBeforeLoading(loading, () => appendToolCallRaw(tc));
           } else if (evName === 'tool_result') {
             setLoadingStatus(loading,
               `${lastTool} → ${evData.ok ? '成功' : '失败'}`);
             const m = { content: evData.content || '' };
-            insertBeforeAnswer(answerEl, loading, () => appendToolResultRaw(m));
+            insertBeforeLoading(loading, () => appendToolResultRaw(m));
           } else if (evName === 'pending') {
             setLoadingStatus(loading, '等待用户确认');
           } else if (evName === 'diff_updated') {
