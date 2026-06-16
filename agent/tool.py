@@ -166,14 +166,12 @@ def _read_file_tool(path: str, start_line: int | None = None) -> str:
         "properties": {
             "file_path": {"type": "string",  "description": "新文件的绝对路径"},
             "content":   {"type": "string",  "default": "", "description": "初始内容(可选)"},
-            "auto":      {"type": "boolean", "default": True,
-                          "description": "True=立即执行;False=返回方案待确认。state.auto=False 时此参数无效,始终暂停。"},
         },
         "required": ["file_path"],
     },
 )
-def _create_file(file_path: str, content: str = "", auto: bool = True) -> str:
-    if not state.get_auto() or not auto:
+def _create_file(file_path: str, content: str = "") -> str:
+    if not state.get_auto():
         pending = {"action": "create_file", "args": {"file_path": file_path, "content": content}}
         state.set_pending(pending)
         return json.dumps({"status": "pending_approval", **pending}, ensure_ascii=False)
@@ -218,6 +216,10 @@ def _create_file(file_path: str, content: str = "", auto: bool = True) -> str:
 def _edit_file(file_path: str, patches: list) -> str:
     if not isinstance(patches, list):
         return "错误: patches 必须是数组"
+    if not state.get_auto():
+        pending = {"action": "edit_file", "args": {"file_path": file_path, "patches": patches}}
+        state.set_pending(pending)
+        return json.dumps({"status": "pending_approval", **pending}, ensure_ascii=False)
     result = agent_diff.store_patch(file_path, patches)
     if not result["ok"]:
         return f"edit_file 失败: {result.get('error', '未知错误')}"
@@ -231,13 +233,12 @@ def _edit_file(file_path: str, patches: list) -> str:
         "type": "object",
         "properties": {
             "file_path": {"type": "string", "description": "要删除的文件绝对路径"},
-            "auto":      {"type": "boolean", "default": True, "description": "True=立即执行;False=返回方案待确认"},
         },
         "required": ["file_path"],
     },
 )
-def _remove_file_tool(file_path: str, auto: bool = True) -> str:
-    if not state.get_auto() or not auto:
+def _remove_file_tool(file_path: str) -> str:
+    if not state.get_auto():
         pending = {"action": "remove_file", "args": {"file_path": file_path}}
         state.set_pending(pending)
         return json.dumps({"status": "pending_approval", **pending}, ensure_ascii=False)

@@ -6,6 +6,15 @@
 (function () {
   'use strict';
 
+  // ============ 工具函数 ============
+  async function safeJson(resp) {
+    const text = await resp.text();
+    try { return JSON.parse(text); }
+    catch (e) {
+      return { ok: false, error: `服务器返回非 JSON 响应(HTTP ${resp.status})` };
+    }
+  }
+
   // ============ 模型切换下拉 ============
   const select = document.querySelector('.model-select');
   if (!select) return;
@@ -624,9 +633,6 @@
   const diffViewerEl = document.getElementById('diff-viewer');
   const diffTabsEl   = document.getElementById('diff-tabs');
   const diffBodyEl   = document.getElementById('diff-body');
-  const diffFooterEl = document.getElementById('diff-footer');
-  const diffKeepBtn  = document.getElementById('diff-keep-btn');
-  const diffDiscardBtn = document.getElementById('diff-discard-btn');
   const welcomeEl    = document.getElementById('center-welcome');
   const centerEl     = document.querySelector('.center');
   let diffFiles   = [];           // [{path, name, op}]
@@ -668,7 +674,68 @@
     renderDiffTabs();
     if (diffActive) loadDiff(diffActive);
     else renderDiffBodyEmpty();
+    updatePatchActions();
   }
+
+  // ── 批量 patch 操作栏 ──
+  const patchActionsEl   = document.getElementById('patch-actions');
+  const patchActionsInfo = document.getElementById('patch-actions-info');
+  const patchKeepAllBtn  = document.getElementById('patch-keep-all');
+  const patchDiscardAllBtn = document.getElementById('patch-discard-all');
+
+  function updatePatchActions() {
+    if (!patchActionsEl) return;
+    const has = diffFiles.length > 0;
+    patchActionsEl.style.display = has ? '' : 'none';
+    if (patchActionsInfo) {
+      patchActionsInfo.textContent = has
+        ? `AI 改动了 ${diffFiles.length} 个文件,请确认`
+        : '';
+    }
+  }
+
+  if (patchKeepAllBtn) patchKeepAllBtn.addEventListener('click', async () => {
+    if (!diffFiles.length) return;
+    if (!confirm(`保留全部 ${diffFiles.length} 个文件的改动?`)) return;
+    const paths = diffFiles.map(f => f.path);
+    let ok = 0, fail = 0;
+    for (const p of paths) {
+      try {
+        const r = await fetch('/api/diff/apply', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({path: p}),
+        });
+        const d = await safeJson(r);
+        if (d.ok) ok++; else fail++;
+      } catch (e) { fail++; }
+    }
+    appendStatus(`批量保留完成: ${ok} 成功${fail ? ', ' + fail + ' 失败' : ''}`);
+    await loadDiffList();
+    treeSignature.clear();
+    pollPath(currentRoot);
+    for (const p of expandedFolders) pollPath(p);
+  });
+
+  if (patchDiscardAllBtn) patchDiscardAllBtn.addEventListener('click', async () => {
+    if (!diffFiles.length) return;
+    if (!confirm(`撤销全部 ${diffFiles.length} 个文件的改动?文件不会被修改。`)) return;
+    const paths = diffFiles.map(f => f.path);
+    let ok = 0, fail = 0;
+    for (const p of paths) {
+      try {
+        const r = await fetch('/api/diff/discard', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({path: p}),
+        });
+        const d = await safeJson(r);
+        if (d.ok) ok++; else fail++;
+      } catch (e) { fail++; }
+    }
+    appendStatus(`批量撤销完成: ${ok} 成功${fail ? ', ' + fail + ' 失败' : ''}`);
+    await loadDiffList();
+  });
 
   function renderDiffTabs() {
     if (!diffTabsEl) return;
@@ -680,7 +747,6 @@
     } else {
       showCenter('welcome');
     }
-    if (diffFooterEl) diffFooterEl.style.display = hasFiles ? '' : 'none';
     for (const f of diffFiles) {
       const tab = document.createElement('div');
       tab.className = 'diff-tab op-' + f.op + (f.path === diffActive ? ' active' : '');
@@ -754,55 +820,6 @@
     if (!diffBodyEl) return;
     diffBodyEl.innerHTML = '';
   }
-
-  // ── diff footer 按钮 ──
-  // 保留:对当前选中文件应用 pending patch(写入磁盘)
-  if (diffKeepBtn) diffKeepBtn.addEventListener('click', async () => {
-    if (!diffActive) { appendStatus('没有可保留的文件'); return; }
-    const target = diffActive;
-    try {
-      const r = await fetch('/api/diff/apply', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({path: target}),
-      });
-      const d = await r.json();
-      if (d.ok) {
-        appendStatus(`已保留 ${target.split(/[\\\/]/).pop()}(patch 已写入)`);
-        setDiffFiles(d.files || []);
-        treeSignature.clear();
-        pollPath(currentRoot);
-        for (const p of expandedFolders) pollPath(p);
-      } else {
-        appendStatus(`保留失败:${d.error || '未知错误'}`);
-      }
-    } catch (e) {
-      appendStatus(`保留失败:${String(e)}`);
-    }
-  });
-
-  // 撤销:丢弃当前选中文件的 pending patch(不写磁盘)
-  if (diffDiscardBtn) diffDiscardBtn.addEventListener('click', async () => {
-    if (!diffActive) { appendStatus('没有可撤销的文件'); return; }
-    const target = diffActive;
-    if (!confirm(`撤销对 ${target.split(/[\\\/]/).pop()} 的改动?文件不会被修改。`)) return;
-    try {
-      const r = await fetch('/api/diff/discard', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({path: target}),
-      });
-      const d = await r.json();
-      if (d.ok) {
-        appendStatus(`已撤销 ${target.split(/[\\\/]/).pop()}`);
-        setDiffFiles(d.files || []);
-      } else {
-        appendStatus(`撤销失败:${d.error || '未知错误'}`);
-      }
-    } catch (e) {
-      appendStatus(`撤销失败:${String(e)}`);
-    }
-  });
 
   // ──────── SCM(源代码管理) ────────
   const scmBranchEl  = document.getElementById('scm-branch');
@@ -1382,7 +1399,7 @@
     // ── agent 改动基线:从后端拉 agent 改动前的原文 ──
     let agentBaseline = null;
     fetch('/api/diff/baseline?path=' + encodeURIComponent(file.path))
-      .then(r => r.json())
+      .then(r => safeJson(r))
       .then(d => {
         if (d.ok && typeof d.baseline === 'string') {
           agentBaseline = d.baseline;
@@ -1488,7 +1505,7 @@
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({path: file.path}),
         })
-          .then(r => r.json())
+          .then(r => safeJson(r))
           .then(d => {
             if (d.ok) {
               agentBaseline = null;
@@ -1520,7 +1537,7 @@
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({path: file.path}),
         })
-          .then(r => r.json())
+          .then(r => safeJson(r))
           .then(d => {
             if (d.ok) {
               // 恢复编辑器内容到磁盘原文(= saved)

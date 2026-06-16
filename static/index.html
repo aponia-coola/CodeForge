@@ -172,10 +172,6 @@
     <div class="diff-viewer" id="diff-viewer" style="display:none;">
       <div class="diff-tabs" id="diff-tabs"></div>
       <div class="diff-body"  id="diff-body"></div>
-      <div class="diff-footer" id="diff-footer" style="display:none;">
-        <button class="diff-btn-keep"    id="diff-keep-btn">✓ 保留</button>
-        <button class="diff-btn-discard" id="diff-discard-btn">⟲ 撤销</button>
-      </div>
     </div>
   </div>
 
@@ -196,10 +192,10 @@
             <span class="toggle-track"><span class="toggle-thumb"></span></span>
             <span class="toggle-label">Plan</span>
           </label>
-          <label class="toggle" title="自动执行:关闭后,文件操作需要手动确认">
+          <label class="toggle" title="工具执行:关闭后,所有文件操作(create/edit/remove)需要手动确认">
             <input type="checkbox" id="toggle-auto" checked>
             <span class="toggle-track"><span class="toggle-thumb"></span></span>
-            <span class="toggle-label">Auto</span>
+            <span class="toggle-label">Tool</span>
           </label>
           <span class="icon-btn pending-badge hidden" id="pending-badge" title="有待确认操作">
             <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
@@ -239,6 +235,12 @@
             您好!我是 Agent。我可以帮助您编写、重构、解释和调试代码。请问您想做什么?
           </div>
         </div>
+      </div>
+      <!-- 批量 patch 操作栏(有 diff 时显示) -->
+      <div class="patch-actions" id="patch-actions" style="display:none;">
+        <span class="patch-actions-info" id="patch-actions-info"></span>
+        <button class="patch-btn patch-btn-keep" id="patch-keep-all">✓ 全部保留</button>
+        <button class="patch-btn patch-btn-discard" id="patch-discard-all">⟲ 全部撤销</button>
       </div>
       <div class="ai-input-wrap">
         <textarea class="ai-input" id="ai-input" placeholder="向 AI 提问... (Enter 发送,Shift+Enter 换行)"></textarea>

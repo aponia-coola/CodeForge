@@ -1228,6 +1228,36 @@ body.resizing, body.resizing * {
   padding: 10px 12px 12px;
   background: var(--bg-panel);
 }
+
+/* 批量 patch 操作栏 */
+.patch-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg-panel);
+}
+.patch-actions-info {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.patch-btn {
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-radius: 4px;
+  padding: 3px 12px;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast);
+}
+.patch-btn:hover { background: var(--bg-hover); }
+.patch-btn-keep { border-color: var(--c-green); color: var(--c-green); }
+.patch-btn-keep:hover { background: var(--c-green); color: #fff; }
+.patch-btn-discard { border-color: var(--c-red); color: var(--c-red); }
+.patch-btn-discard:hover { background: var(--c-red); color: #fff; }
 .ai-input {
   width: 100%;
   background: var(--bg-input);
