@@ -1826,7 +1826,77 @@
     div.appendChild(label);
     div.appendChild(bubble);
     aiMessages.appendChild(div);
+    attachCopyButtons(bubble);
     scrollToBottom();
+  }
+
+  // ──────── 复制按钮 ────────
+  // 给气泡里所有可复制元素(代码块/段落/列表/引用/表格)右上角加按钮
+  function attachCopyButtons(bubble) {
+    if (!bubble) return;
+    // 代码块: 复制 innerText(代码原文)
+    bubble.querySelectorAll('pre').forEach(pre => {
+      if (pre.querySelector(':scope > .copy-btn-pre')) return;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'copy-btn-pre';
+      btn.textContent = '📋 复制';
+      btn.title = '复制代码';
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        copyText(pre.innerText, btn, '📋 复制', '✓ 已复制');
+      });
+      pre.appendChild(btn);
+    });
+    // 整段复制: 只取直接子节点 <p> <ul> <ol> <blockquote> <table>
+    const blocks = bubble.querySelectorAll(':scope > p, :scope > ul, :scope > ol, :scope > blockquote, :scope > table');
+    blocks.forEach(el => {
+      if (el.querySelector(':scope > .copy-btn-block')) return;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'copy-btn-block';
+      btn.textContent = '📋';
+      btn.title = '复制这段';
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        copyText(el.innerText, btn, '📋', '✓');
+      });
+      el.appendChild(btn);
+    });
+  }
+
+  // 复制到剪贴板, 带 fallback
+  async function copyText(text, btn, normalText, copiedText) {
+    if (!text) return;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // 兑底: textarea + execCommand
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      if (btn) {
+        btn.textContent = copiedText;
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.textContent = normalText;
+          btn.classList.remove('copied');
+        }, 1500);
+      }
+    } catch (err) {
+      console.error('复制失败:', err);
+      if (btn) {
+        btn.textContent = '✗ 失败';
+        setTimeout(() => { btn.textContent = normalText; }, 1500);
+      }
+    }
   }
 
   function appendToolCall(tc) {
@@ -2073,12 +2143,12 @@
             lastTool = evData.name;
             setLoadingStatus(loading, `调用工具: ${lastTool}`);
             const tc = { function: { name: evData.name, arguments: JSON.stringify(evData.args || {}) } };
-            insertBeforeLoading(loading, () => appendToolCallRaw(tc));
+            insertBeforeAnswer(answerEl, loading, () => appendToolCallRaw(tc));
           } else if (evName === 'tool_result') {
             setLoadingStatus(loading,
               `${lastTool} → ${evData.ok ? '成功' : '失败'}`);
             const m = { content: evData.content || '' };
-            insertBeforeLoading(loading, () => appendToolResultRaw(m));
+            insertBeforeAnswer(answerEl, loading, () => appendToolResultRaw(m));
           } else if (evName === 'pending') {
             setLoadingStatus(loading, '等待用户确认');
           } else if (evName === 'diff_updated') {
@@ -2086,7 +2156,16 @@
             setDiffFiles(evData.files || []);
           } else if (evName === 'done') {
             finalData = evData;
-            // 收到 done:停掉流光标
+            // 收到 done:取消待执行的重渲,跑一次最终完整渲染
+            if (answerEl && answerTextEl) {
+              if (answerTextEl._raf) { cancelAnimationFrame(answerTextEl._raf); answerTextEl._raf = null; }
+              answerTextEl.innerHTML = formatMarkdownLite(answerTextEl._raw || answerTextEl.textContent || '');
+              // 去掉尾部光标
+              const cursor = answerTextEl.querySelector('.msg-stream-cursor');
+              if (cursor) cursor.remove();
+              // 流式渲染完成后,给代码块 / 段落 / 表格 加复制按钮
+              attachCopyButtons(answerEl);
+            }
             if (answerEl) answerEl.parentElement?.classList.add('msg-stream-done');
             if (thinkEl)  thinkEl.parentElement?.classList.add('msg-stream-done');
           } else if (evName === 'error') {
@@ -2156,7 +2235,9 @@
     scrollToBottom();
   }
   // 流式输出:在 loading 上方建一个气泡(返回 {bubble, text} 用于持续 append)
-  function makeStreamBubble(loadingEl, extraClass) {
+  // useMarkdown: true  = 正文 (边输入边用 marked 重渲)
+  //              false = 思考 (纯文本,保留原始字符)
+  function makeStreamBubble(loadingEl, extraClass, useMarkdown) {
     const div = document.createElement('div');
     div.className = `msg ${extraClass || ''}`;
     const label = document.createElement('div');
@@ -2165,7 +2246,15 @@
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble';
     const text = document.createElement('div');
-    text.className = 'msg-stream-text';
+    // 思考=纯文本;正文=先用 msg-stream-text,改 innerHTML 后用 cursor
+    text.className = useMarkdown ? 'msg-stream-text' : 'msg-stream-text msg-stream-plain';
+    text._raw = '';
+    if (useMarkdown) {
+      // 正文:附一个流式光标标记;markdown 重渲后会在末尾补上
+      const cursor = document.createElement('span');
+      cursor.className = 'msg-stream-cursor';
+      text.appendChild(cursor);
+    }
     bubble.appendChild(text);
     div.appendChild(label);
     div.appendChild(bubble);

@@ -1020,8 +1020,181 @@ body.resizing, body.resizing * {
   font-size: 13px;
   border: 1px solid transparent;
   transition: border-color var(--t-fast);
+
+  /* ===== 限宽:防止长词 / URL / 代码行 撑破右侧栏 ===== */
+  display: flow-root;             /* BFC, 子元素不会溢出 */
+  min-width: 0;                   /* flex 子项允许收缩 */
+  max-width: 100%;
+  box-sizing: border-box;
+
+  /* 文字断行(双保险,覆盖任意情况) */
+  overflow-wrap: anywhere;        /* 任意位置断,包含 URL */
+  word-break: break-word;         /* 兜底 */
+  hyphens: auto;                  /* 允许浏览器加 - 连字符 */
+
+  /* 最后兑底:真超长了横向滚动,而不是撑破 */
+  overflow-x: auto;
 }
 .msg-bubble:hover { border-color: var(--border); }
+
+/* ===== 终极兑底:.msg-bubble 内所有元素都强制断行 ===== */
+/* 有些 marked 输出 / DOMPurify 输出会重设 white-space, 上面规则会被覆盖 */
+.msg-bubble * {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  box-sizing: border-box;
+}
+/* 代码块是唯一例外: 不要在词中断(会拆坏代码) */
+.msg-bubble pre,
+.msg-bubble pre * {
+  overflow-wrap: normal;
+  word-break: normal;
+  white-space: pre;
+}
+
+/* 思考块:限高 + 限宽 + 独立滚动 */
+.msg-thinking .msg-bubble {
+  max-height: 240px;
+  overflow-y: auto;
+  max-width: 100%;
+}
+
+/* 列表/段落/标题/引用/链接: 单独保险,有些浏览器对 a 不应用 overflow-wrap */
+.msg-bubble p,
+.msg-bubble li,
+.msg-bubble h1, .msg-bubble h2, .msg-bubble h3,
+.msg-bubble h4, .msg-bubble h5, .msg-bubble h6,
+.msg-bubble blockquote {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+  /* body 全局禁选,这里打开:允许选中/复制 */
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* 代码块也允许选中/复制 */
+.msg-bubble pre,
+.msg-bubble pre code,
+.msg-bubble code,
+.msg-bubble td,
+.msg-bubble th {
+  user-select: text;
+  -webkit-user-select: text;
+}
+.msg-bubble a {
+  overflow-wrap: anywhere;
+  word-break: break-all;          /* <a> 里的 URL 强制断 */
+}
+
+/* marked 生成的 <pre><code>: 横向滚动,不能撑破气泡 */
+.msg-bubble pre {
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  overflow-x: auto;
+  max-width: 100%;
+  font-family: "SF Mono", Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+  box-sizing: border-box;
+}
+.msg-bubble pre code {
+  font-family: inherit;
+  font-size: inherit;
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
+  white-space: pre;
+  word-break: normal;             /* 代码块内不要拆单词 */
+}
+/* 行内 code: 太长也能断 */
+.msg-bubble :not(pre) > code {
+  background: var(--bg-base);
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-family: "SF Mono", Consolas, monospace;
+  font-size: 12px;
+  color: var(--c-yellow);
+  word-break: break-all;
+}
+
+/* ===== 复制按钮: 代码块 / AI 正文 ===== */
+/* 代码块按钮: 右上角浮动 */
+.msg-bubble pre {
+  position: relative;
+}
+.copy-btn-pre {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: rgba(0, 0, 0, .35);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s, background .15s, color .15s;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1;
+  user-select: none;
+}
+.msg-bubble pre:hover .copy-btn-pre,
+.copy-btn-pre:focus-visible { opacity: 1; }
+.copy-btn-pre:hover { background: var(--c-purple); color: #fff; border-color: var(--c-purple); }
+.copy-btn-pre.copied { background: var(--c-green); color: #fff; border-color: var(--c-green); opacity: 1; }
+
+/* 整段复制按钮: AI 正文的 p/ul/ol/blockquote/table 右上角 */
+.msg-bubble > p,
+.msg-bubble > ul,
+.msg-bubble > ol,
+.msg-bubble > blockquote,
+.msg-bubble > table,
+.msg-bubble > pre {
+  position: relative;
+}
+.copy-btn-block {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-family: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s, background .15s, color .15s;
+  line-height: 1.4;
+  user-select: none;
+}
+.msg-bubble > p:hover .copy-btn-block,
+.msg-bubble > ul:hover .copy-btn-block,
+.msg-bubble > ol:hover .copy-btn-block,
+.msg-bubble > blockquote:hover .copy-btn-block,
+.msg-bubble > table:hover .copy-btn-block,
+.copy-btn-block:focus-visible { opacity: 1; }
+.copy-btn-block:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+  border-color: var(--border);
+}
+.copy-btn-block.copied {
+  color: var(--c-green);
+  opacity: 1;
+}
 
 /* 流式输出:思考块(斜体 + dim),答案块(普通) */
 .msg-thinking .msg-label { color: var(--c-purple-soft); font-style: italic; }
@@ -1033,14 +1206,18 @@ body.resizing, body.resizing * {
   font-size: 12px;
   white-space: pre-wrap;
 }
-.msg-stream-text::after {
-  content: "▍";
-  animation: cursor-blink 0.9s steps(2) infinite;
-  color: var(--c-purple);
+/* 真光标 span:marked 重渲染 innerHTML 后会丢 ::after,所以改为真的 <span> */
+.msg-stream-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 13px;
+  background: var(--c-purple);
   margin-left: 1px;
+  vertical-align: text-bottom;
+  animation: cursor-blink 0.9s steps(2) infinite;
 }
-.msg-thinking .msg-stream-text::after { color: var(--c-purple-soft); }
-.msg-stream-done .msg-stream-text::after { content: none; }
+.msg-thinking .msg-stream-cursor { background: var(--c-purple-soft); }
+.msg-stream-done .msg-stream-cursor { display: none; }
 @keyframes cursor-blink {
   0%, 50% { opacity: 1; }
   51%, 100% { opacity: 0; }
