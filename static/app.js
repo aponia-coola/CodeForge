@@ -2575,10 +2575,12 @@
       termInput.value = '';
       termInput.disabled = true;
       try {
+        const body = { command: cmd };
+        if (activeSshSid) body.ssh_sid = activeSshSid;
         const r = await fetch('/api/terminal/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ command: cmd }),
+          body: JSON.stringify(body),
         }).then(r => r.json());
         if (r.stdout) appendTermLine(r.stdout, 'term-out');
         if (r.stderr) appendTermLine(r.stderr, 'term-err');
@@ -2592,6 +2594,246 @@
       }
     });
   }
+
+  // ════════════════════════════════════════════════════════════
+  //                       SSH 远程连接
+  // ════════════════════════════════════════════════════════════
+  // 全局:活动的 SSH 会话 id(为 null 表示本地终端)
+  let activeSshSid = null;
+  const sshSessions = new Map(); // sid -> { sid, host, port, user, connected }
+
+  const sshIcon        = document.getElementById('ssh-icon');
+  const sshModalMask   = document.getElementById('ssh-modal-mask');
+  const sshHostInput   = document.getElementById('ssh-host');
+  const sshPortInput   = document.getElementById('ssh-port');
+  const sshUserInput   = document.getElementById('ssh-user');
+  const sshPassInput   = document.getElementById('ssh-password');
+  const sshKeyInput    = document.getElementById('ssh-key');
+  const sshModalErr    = document.getElementById('ssh-modal-err');
+  const sshConnectBtn  = document.getElementById('ssh-connect-btn');
+  const sshCancelBtn   = document.getElementById('ssh-cancel');
+  const sshListMask    = document.getElementById('ssh-list-mask');
+  const sshListBody    = document.getElementById('ssh-list-body');
+  const sshListCloseBtn= document.getElementById('ssh-list-close');
+
+  // 在终端面板顶部插入 SSH 状态条
+  let sshStatusBar = null;
+  function ensureSshStatusBar() {
+    if (sshStatusBar) return sshStatusBar;
+    if (!termBody) return null;
+    const terminalPanel = termBody.closest('.terminal');
+    if (!terminalPanel) return null;
+    sshStatusBar = document.createElement('div');
+    sshStatusBar.className = 'ssh-status-bar';
+    sshStatusBar.style.display = 'none';
+    sshStatusBar.innerHTML = `
+      <span class="ssh-dot"></span>
+      <span>SSH:</span>
+      <span class="ssh-host"></span>
+      <span class="ssh-user"></span>
+      <span class="ssh-disconnect" title="断开 SSH,回到本地">断开</span>
+    `;
+    terminalPanel.insertBefore(sshStatusBar, terminalPanel.firstChild.nextSibling);
+    sshStatusBar.querySelector('.ssh-disconnect').addEventListener('click', () => {
+      disconnectActiveSsh();
+    });
+    return sshStatusBar;
+  }
+
+  function setActiveSsh(sid) {
+    activeSshSid = sid;
+    const bar = ensureSshStatusBar();
+    if (!bar) return;
+    if (!sid) {
+      bar.style.display = 'none';
+      if (sshIcon) sshIcon.classList.remove('connected');
+      return;
+    }
+    const s = sshSessions.get(sid);
+    if (!s) { activeSshSid = null; bar.style.display = 'none'; return; }
+    bar.querySelector('.ssh-host').textContent = `${s.host}:${s.port}`;
+    bar.querySelector('.ssh-user').textContent = `(${s.user})`;
+    bar.style.display = 'flex';
+    if (sshIcon) sshIcon.classList.add('connected');
+  }
+
+  function disconnectActiveSsh() {
+    if (!activeSshSid) return;
+    const sid = activeSshSid;
+    fetch('/api/ssh/disconnect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sid }),
+    }).catch(() => {}).finally(() => {
+      sshSessions.delete(sid);
+      setActiveSsh(null);
+      appendTermLine('[SSH 已断开,回到本地终端]', 'term-ok');
+    });
+  }
+
+  async function refreshSshSessions() {
+    try {
+      const r = await fetch('/api/ssh/sessions').then(r => r.json());
+      if (!r.ok) return;
+      sshSessions.clear();
+      for (const s of (r.sessions || [])) sshSessions.set(s.id, s);
+    } catch {}
+  }
+
+  function openSshModal() {
+    if (!sshModalMask) return;
+    sshModalErr.textContent = '';
+    sshHostInput.value = '';
+    sshPortInput.value = '22';
+    sshUserInput.value = '';
+    sshPassInput.value = '';
+    sshKeyInput.value  = '';
+    sshModalMask.style.display = 'flex';
+    setTimeout(() => sshHostInput.focus(), 0);
+  }
+  function closeSshModal() {
+    if (sshModalMask) sshModalMask.style.display = 'none';
+  }
+
+  async function doSshConnect() {
+    const host = sshHostInput.value.trim();
+    const port = parseInt(sshPortInput.value, 10) || 22;
+    const user = sshUserInput.value.trim();
+    const password = sshPassInput.value;
+    const key_path = sshKeyInput.value.trim();
+    if (!host) { sshModalErr.textContent = '请填写主机'; return; }
+    if (!user) { sshModalErr.textContent = '请填写用户名'; return; }
+    if (!password && !key_path) { sshModalErr.textContent = '请填写密码或私钥路径'; return; }
+    sshConnectBtn.disabled = true;
+    sshConnectBtn.textContent = '连接中...';
+    sshModalErr.textContent = '';
+    try {
+      const r = await fetch('/api/ssh/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ host, port, user, password, key_path }),
+      }).then(r => r.json());
+      if (!r.ok) { sshModalErr.textContent = r.error || '连接失败'; return; }
+      sshSessions.set(r.session.id, r.session);
+      setActiveSsh(r.session.id);
+      closeSshModal();
+      appendTermLine(`[SSH 已连接 → ${user}@${host}:${port}]`, 'term-ok');
+      // 自动跑一下 pwd,确认能执行
+      try {
+        const rr = await fetch('/api/terminal/run', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: 'pwd', ssh_sid: r.session.id }),
+        }).then(r => r.json());
+        if (rr.stdout) appendTermLine(`(远程 cwd) ${rr.stdout}`, 'term-out');
+      } catch {}
+    } catch (err) {
+      sshModalErr.textContent = '网络错误: ' + (err.message || err);
+    } finally {
+      sshConnectBtn.disabled = false;
+      sshConnectBtn.textContent = '连接';
+    }
+  }
+
+  function renderSshList() {
+    if (!sshListBody) return;
+    const arr = Array.from(sshSessions.values());
+    if (!arr.length) {
+      sshListBody.innerHTML = '<div class="ssh-list-empty">暂无活动 SSH 会话</div>';
+      return;
+    }
+    sshListBody.innerHTML = '';
+    for (const s of arr) {
+      const row = document.createElement('div');
+      row.className = 'ssh-list-item';
+      const isActive = s.id === activeSshSid;
+      row.innerHTML = `
+        <div class="ssh-info">
+          <div class="ssh-host">${s.user}@${s.host}:${s.port}</div>
+          <div class="ssh-meta">sid: ${s.id}${s.connected ? ' · 已连接' : ' · 断开'}</div>
+        </div>
+        <div class="ssh-actions">
+          <button class="use ${isActive ? 'active' : ''}">${isActive ? '当前' : '使用'}</button>
+          <button class="ls">列目录</button>
+          <button class="danger del">断开</button>
+        </div>
+      `;
+      row.querySelector('.use').addEventListener('click', () => {
+        setActiveSsh(s.id);
+        closeSshList();
+      });
+      row.querySelector('.ls').addEventListener('click', async () => {
+        try {
+          const r = await fetch(`/api/ssh/list?sid=${encodeURIComponent(s.id)}&path=.`)
+            .then(r => r.json());
+          if (r.ok) {
+            const lines = (r.items || []).map(it =>
+              `${it.type === 'folder' ? '📁' : '📄'} ${it.name}`
+            ).join('\n');
+            appendTermLine(`[SSH ${s.host} ${r.path}]\n${lines || '(空目录)'}`, 'term-out');
+          } else {
+            appendTermLine(`[SSH 列表失败] ${r.error}`, 'term-err');
+          }
+        } catch (err) {
+          appendTermLine(`[SSH 列表错误] ${err.message || err}`, 'term-err');
+        }
+      });
+      row.querySelector('.del').addEventListener('click', async () => {
+        await fetch('/api/ssh/disconnect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sid: s.id }),
+        }).catch(() => {});
+        if (activeSshSid === s.id) setActiveSsh(null);
+        sshSessions.delete(s.id);
+        renderSshList();
+      });
+      sshListBody.appendChild(row);
+    }
+  }
+  function openSshList() {
+    refreshSshSessions().then(renderSshList);
+    if (sshListMask) sshListMask.style.display = 'flex';
+  }
+  function closeSshList() {
+    if (sshListMask) sshListMask.style.display = 'none';
+  }
+
+  // 事件绑定
+  if (sshIcon) {
+    sshIcon.addEventListener('click', () => {
+      if (sshSessions.size > 0) openSshList();
+      else openSshModal();
+    });
+  }
+  if (sshCancelBtn)     sshCancelBtn.addEventListener('click', closeSshModal);
+  if (sshConnectBtn)    sshConnectBtn.addEventListener('click', doSshConnect);
+  if (sshListCloseBtn)  sshListCloseBtn.addEventListener('click', closeSshList);
+  if (sshModalMask) {
+    sshModalMask.addEventListener('click', e => {
+      if (e.target === sshModalMask) closeSshModal();
+    });
+  }
+  if (sshListMask) {
+    sshListMask.addEventListener('click', e => {
+      if (e.target === sshListMask) closeSshList();
+    });
+  }
+  // Enter 在 password/host 直接连接
+  if (sshHostInput) sshHostInput.addEventListener('keydown', e => { if (e.key === 'Enter') doSshConnect(); });
+  if (sshPassInput) sshPassInput.addEventListener('keydown', e => { if (e.key === 'Enter') doSshConnect(); });
+  if (sshUserInput) sshUserInput.addEventListener('keydown', e => { if (e.key === 'Enter') doSshConnect(); });
+  if (sshKeyInput)  sshKeyInput.addEventListener('keydown',  e => { if (e.key === 'Enter') doSshConnect(); });
+
+  // 启动时拉一次,补齐状态(防止后端有遗留 session)
+  refreshSshSessions().then(() => {
+    if (sshSessions.size > 0) {
+      // 默认选第一个
+      const first = sshSessions.values().next().value;
+      if (first) setActiveSsh(first.id);
+    }
+  });
+
   if (pendingReject) {
     pendingReject.addEventListener('click', () => {
       fetch('/api/agent/pending/reject', { method: 'POST' })

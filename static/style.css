@@ -2492,4 +2492,160 @@ body.resizing, body.resizing * {
   border: 1px solid var(--border);
   padding: 3px 6px;
 }
+
+/* ===== SSH 远程连接 modal ===== */
+.modal-mask {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, .55);
+  backdrop-filter: blur(2px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 9999;
+}
+.modal-box {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 18px 20px;
+  min-width: 380px;
+  max-width: 92vw;
+  box-shadow: var(--shadow-md);
+  color: var(--text);
+}
+.ssh-modal-box { width: 420px; }
+.ssh-list-box  { width: 520px; }
+.modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-strong);
+  margin-bottom: 14px;
+  display: flex; align-items: center; gap: 6px;
+}
+.modal-form { display: flex; flex-direction: column; gap: 10px; }
+.modal-form label {
+  display: flex; flex-direction: column;
+  font-size: 11.5px;
+  color: var(--text-muted);
+  gap: 3px;
+}
+.modal-form input {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 6px 10px;
+  border-radius: 4px;
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+  transition: border-color var(--t-fast);
+}
+.modal-form input:focus { border-color: var(--c-purple); }
+.modal-form .ssh-optional { color: var(--text-dim); }
+.ssh-modal-err {
+  font-size: 11.5px;
+  color: var(--c-red);
+  min-height: 14px;
+  word-break: break-all;
+}
+.modal-actions {
+  display: flex; justify-content: flex-end; gap: 8px;
+  margin-top: 16px;
+}
+.modal-btn {
+  padding: 6px 16px;
+  border: 1px solid var(--border);
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--t-fast);
+}
+.modal-btn:hover { background: var(--bg-hover); }
+.modal-btn.primary {
+  background: var(--c-purple);
+  color: #fff;
+  border-color: var(--c-purple);
+}
+.modal-btn.primary:hover { filter: brightness(1.1); }
+.modal-btn:disabled { opacity: .55; cursor: wait; }
+
+/* SSH 列表项 */
+.ssh-list-body {
+  max-height: 360px;
+  overflow-y: auto;
+  display: flex; flex-direction: column; gap: 6px;
+}
+.ssh-list-empty {
+  text-align: center;
+  color: var(--text-dim);
+  padding: 28px 0;
+  font-size: 12px;
+}
+.ssh-list-item {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  font-size: 12px;
+}
+.ssh-list-item .ssh-info {
+  display: flex; flex-direction: column; gap: 2px;
+}
+.ssh-list-item .ssh-host { color: var(--text-strong); font-weight: 600; }
+.ssh-list-item .ssh-meta { color: var(--text-dim); font-size: 11px; }
+.ssh-list-item .ssh-actions { display: flex; gap: 6px; }
+.ssh-list-item button {
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text);
+  border-radius: 3px;
+  padding: 3px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.ssh-list-item button:hover { background: var(--bg-hover); }
+.ssh-list-item button.danger { color: var(--c-red); border-color: var(--c-red); }
+.ssh-list-item button.danger:hover { background: var(--c-red); color: #fff; }
+.ssh-list-item button.active { background: var(--c-purple); color: #fff; border-color: var(--c-purple); }
+
+/* sidebar 上的 SSH 图标 */
+#ssh-icon {
+  cursor: pointer;
+  position: relative;
+}
+#ssh-icon:hover { color: var(--c-purple-soft); }
+#ssh-icon.connected::after {
+  content: '';
+  position: absolute;
+  top: 4px; right: 4px;
+  width: 6px; height: 6px;
+  background: var(--c-green);
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--bg-base);
+}
+/* 终端面板上的 SSH 状态条 */
+.ssh-status-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 10px;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.ssh-status-bar .ssh-dot {
+  width: 6px; height: 6px;
+  background: var(--c-green);
+  border-radius: 50%;
+}
+.ssh-status-bar .ssh-host { color: var(--text-strong); font-weight: 600; }
+.ssh-status-bar .ssh-disconnect {
+  margin-left: auto;
+  color: var(--c-red);
+  cursor: pointer;
+  font-size: 11px;
+}
+.ssh-status-bar .ssh-disconnect:hover { text-decoration: underline; }
+
 .pending-card-body th { background: var(--bg-base); color: var(--text-strong); }

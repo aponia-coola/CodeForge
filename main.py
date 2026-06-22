@@ -666,6 +666,89 @@ def api_file_save():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 # ════════════════════════════════════════════════════════════
+#                      SSH 远程会话
+# ════════════════════════════════════════════════════════════
+
+@app.post('/api/ssh/connect')
+def api_ssh_connect():
+    """新建 SSH 连接,返回 sid。Body: {host, port, user, password?, key_path?}"""
+    data = flask_request.get_json(silent=True) or {}
+    host     = (data.get('host')     or '').strip()
+    user     = (data.get('user')     or '').strip()
+    password = (data.get('password') or '')
+    key_path = (data.get('key_path') or '').strip()
+    try:
+        port = int(data.get('port') or 22)
+    except (TypeError, ValueError):
+        port = 22
+    if not host:
+        return jsonify({"ok": False, "error": "缺少 host"}), 400
+    if not user:
+        return jsonify({"ok": False, "error": "缺少 user"}), 400
+    if not password and not key_path:
+        return jsonify({"ok": False, "error": "必须提供 password 或 key_path"}), 400
+    try:
+        from ssh import get_manager
+        s = get_manager().create(host, port, user, password=password, key_path=key_path)
+    except RuntimeError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"{type(e).__name__}: {e}"}), 500
+    return jsonify({"ok": True, "session": s.info()})
+
+
+@app.get('/api/ssh/sessions')
+def api_ssh_sessions():
+    """列出所有活动 SSH 会话。"""
+    from ssh import get_manager
+    return jsonify({"ok": True, "sessions": get_manager().list()})
+
+
+@app.post('/api/ssh/disconnect')
+def api_ssh_disconnect():
+    """关闭指定 SSH 会话。Body: {sid}"""
+    data = flask_request.get_json(silent=True) or {}
+    sid  = (data.get('sid') or '').strip()
+    if not sid:
+        return jsonify({"ok": False, "error": "缺少 sid"}), 400
+    from ssh import get_manager
+    ok = get_manager().destroy(sid)
+    return jsonify({"ok": ok, "sid": sid})
+
+
+@app.get('/api/ssh/list')
+def api_ssh_list():
+    """列远程目录。Query: ?sid=...&path=..."""
+    from ssh import get_manager
+    sid  = (flask_request.args.get('sid')  or '').strip()
+    path = (flask_request.args.get('path') or '').strip() or '.'
+    s = get_manager().get(sid)
+    if not s:
+        return jsonify({"ok": False, "error": "session not found"}), 404
+    return jsonify(s.list_dir(path))
+
+
+@app.post('/api/ssh/exec')
+def api_ssh_exec():
+    """远端跑一条命令。Body: {sid, command, cwd?, timeout?}"""
+    data = flask_request.get_json(silent=True) or {}
+    sid     = (data.get('sid') or '').strip()
+    command = (data.get('command') or '').strip()
+    cwd     = (data.get('cwd') or '').strip()
+    try:
+        timeout = int(data.get('timeout') or 30)
+    except (TypeError, ValueError):
+        timeout = 30
+    if not sid or not command:
+        return jsonify({"ok": False, "error": "缺少 sid/command"}), 400
+    from ssh import get_manager
+    s = get_manager().get(sid)
+    if not s:
+        return jsonify({"ok": False, "error": "session not found"}), 404
+    return jsonify(s.exec(command, cwd=cwd, timeout=timeout))
+
+
+# ════════════════════════════════════════════════════════════
 #                      终端执行
 # ════════════════════════════════════════════════════════════
 
@@ -673,18 +756,30 @@ def api_file_save():
 def api_terminal_run():
     """
     执行一条 shell 命令并返回结果。
-    Body: {"command": "...", "cwd": "..."(可选), "timeout": int(秒,可选,默认 30)}
+    Body: {"command": "...", "cwd": "..."(可选), "timeout": int(秒,可选,默认 30),
+           "ssh_sid": "..."(可选,传了就走 SSH 远程执行)}
     """
-    from terminal import run as term_run
     data    = flask_request.get_json(silent=True) or {}
     command = (data.get('command') or '').strip()
     cwd     = (data.get('cwd') or '').strip() or None
+    ssh_sid = (data.get('ssh_sid') or '').strip()
     try:
         timeout = int(data.get('timeout') or 30)
     except (TypeError, ValueError):
         timeout = 30
     if not command:
         return jsonify({"ok": False, "error": "缺少 command"}), 400
+
+    # 走 SSH
+    if ssh_sid:
+        from ssh import get_manager
+        s = get_manager().get(ssh_sid)
+        if not s:
+            return jsonify({"ok": False, "error": "ssh session not found"}), 404
+        return jsonify(s.exec(command, cwd=cwd or '', timeout=timeout))
+
+    # 本地
+    from terminal import run as term_run
     result = term_run(command, cwd=cwd, timeout=timeout)
     return jsonify(result)
 
