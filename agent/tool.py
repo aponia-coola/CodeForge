@@ -172,7 +172,11 @@ def _read_file_tool(path: str, start_line: int | None = None) -> str:
 )
 def _create_file(file_path: str, content: str = "") -> str:
     if not state.get_auto():
-        pending = {"action": "create_file", "args": {"file_path": file_path, "content": content}}
+        pending = {
+            "action":   "create_file",
+            "args":     {"file_path": file_path, "content": content},
+            "markdown": f"**创建文件**:`{file_path}`",
+        }
         state.set_pending(pending)
         return json.dumps({"status": "pending_approval", **pending}, ensure_ascii=False)
     if os.path.exists(file_path):
@@ -217,7 +221,11 @@ def _edit_file(file_path: str, patches: list) -> str:
     if not isinstance(patches, list):
         return "错误: patches 必须是数组"
     if not state.get_auto():
-        pending = {"action": "edit_file", "args": {"file_path": file_path, "patches": patches}}
+        pending = {
+            "action":   "edit_file",
+            "args":     {"file_path": file_path, "patches": patches},
+            "markdown": f"**修改文件**:`{file_path}`\n\n**改动**: {len(patches)} 处替换",
+        }
         state.set_pending(pending)
         return json.dumps({"status": "pending_approval", **pending}, ensure_ascii=False)
     result = agent_diff.store_patch(file_path, patches)
@@ -239,7 +247,11 @@ def _edit_file(file_path: str, patches: list) -> str:
 )
 def _remove_file_tool(file_path: str) -> str:
     if not state.get_auto():
-        pending = {"action": "remove_file", "args": {"file_path": file_path}}
+        pending = {
+            "action":   "remove_file",
+            "args":     {"file_path": file_path},
+            "markdown": f"**删除文件**:`{file_path}`",
+        }
         state.set_pending(pending)
         return json.dumps({"status": "pending_approval", **pending}, ensure_ascii=False)
     agent_diff.snapshot_before(file_path)

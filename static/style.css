@@ -128,7 +128,7 @@ body {
 .explorer, .explorer-path, .explorer-list, .diff-viewer,
 .diff-tabs, .diff-body, .terminal, .term-tabs, .term-body,
 .editor, .editor-header, .theme-switch, .msg-bubble,
-.msg-tool, .msg-tool-result, .pending-card, .ai-actions,
+.msg-tool, .msg-tool-result, .msg-pending-confirm, .ai-actions,
 .kbd {
   transition: background-color .25s ease, color .25s ease,
               border-color .25s ease;
@@ -2032,58 +2032,46 @@ body.resizing, body.resizing * {
   50%      { opacity: 0.55; }
 }
 
-/* ─── pending 卡片 ─── */
-.pending-card {
-  margin: 8px 12px 0;
-  padding: 10px 12px;
-  background: rgba(254, 188, 46, .08);
-  border: 1px solid rgba(254, 188, 46, .35);
-  border-radius: 6px;
-  font-size: 12px;
-  animation: slide-in 0.25s cubic-bezier(.4, 0, .2, 1) both;
+/* ─── 对话流中的待确认气泡(行内确认) ─── */
+.msg-pending-confirm {
+  align-items: stretch;
 }
-.pending-card-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-.pending-card-title {
+.msg-pending-confirm .msg-label {
   color: var(--c-orange);
   font-weight: 600;
-  font-size: 12px;
 }
-.pending-card-action {
+.msg-pending-confirm .msg-bubble {
+  background: rgba(254, 188, 46, .08);
+  border: 1px solid rgba(254, 188, 46, .35);
+}
+.msg-pending-confirm .pending-action-tag {
   font-family: "SF Mono", Consolas, monospace;
   font-size: 10px;
   color: var(--text-muted);
   background: var(--bg-elevated);
-  padding: 2px 6px;
+  padding: 1px 6px;
   border-radius: 3px;
   border: 1px solid var(--border);
+  margin-left: 6px;
 }
-.pending-card-body {
+.msg-pending-confirm .pending-confirm-body {
   background: var(--bg-base);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 8px 10px;
-  font-family: "SF Mono", Consolas, "Courier New", monospace;
-  font-size: 11px;
-  line-height: 1.5;
-  max-height: 180px;
+  font-size: 12px;
+  line-height: 1.55;
+  max-height: 240px;
   overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  margin: 0 0 8px 0;
+  margin: 6px 0 8px 0;
 }
-.pending-card-actions {
+.msg-pending-confirm .pending-confirm-actions {
   display: flex;
   gap: 6px;
   justify-content: flex-end;
 }
-.pending-btn {
+.msg-pending-confirm .pending-confirm-btn {
   border: none;
   font-family: inherit;
   font-size: 11px;
@@ -2093,17 +2081,17 @@ body.resizing, body.resizing * {
   cursor: pointer;
   transition: all var(--t-fast);
 }
-.pending-btn-ok {
+.msg-pending-confirm .pending-confirm-ok {
   background: var(--c-purple);
   color: #fff;
 }
-.pending-btn-ok:hover { background: var(--c-purple-soft); }
-.pending-btn-no {
+.msg-pending-confirm .pending-confirm-ok:hover { background: var(--c-purple-soft); }
+.msg-pending-confirm .pending-confirm-no {
   background: var(--bg-elevated);
   color: var(--text);
   border: 1px solid var(--border);
 }
-.pending-btn-no:hover {
+.msg-pending-confirm .pending-confirm-no:hover {
   background: var(--bg-hover);
   color: var(--c-red);
   border-color: var(--c-red);
@@ -2305,7 +2293,7 @@ body.resizing, body.resizing * {
   to   { transform: rotate(360deg); }
 }
 /* ============================================================
-   Markdown 渲染样式(marked 输出,在 msg-bubble 与 pending-card-body 内生效)
+   Markdown 渲染样式(marked 输出,在 msg-bubble 与 pending-confirm-body 内生效)
    ============================================================ */
 .msg-bubble h1, .msg-bubble h2, .msg-bubble h3,
 .msg-bubble h4, .msg-bubble h5, .msg-bubble h6 {
@@ -2458,29 +2446,29 @@ body.resizing, body.resizing * {
   margin: 4px 0;
 }
 
-/* pending-card-body 里的 markdown(同套规则,字号更小) */
-.pending-card-body h1, .pending-card-body h2, .pending-card-body h3 {
+/* pending-confirm-body 里的 markdown(同套规则,字号更小) */
+.pending-confirm-body h1, .pending-confirm-body h2, .pending-confirm-body h3 {
   margin: 6px 0 3px;
   color: var(--text-strong);
   font-weight: 600;
 }
-.pending-card-body h1 { font-size: 14px;   }
-.pending-card-body h2 { font-size: 13px;   }
-.pending-card-body h3 { font-size: 12.5px; }
-.pending-card-body p  { margin: 3px 0; }
-.pending-card-body ul, .pending-card-body ol { padding-left: 20px; margin: 4px 0; }
-.pending-card-body li { margin: 1px 0; }
-.pending-card-body strong { color: var(--text-strong); }
-.pending-card-body em     { color: var(--c-yellow); font-style: italic; }
-.pending-card-body a      { color: var(--c-purple-soft); }
-.pending-card-body blockquote {
+.pending-confirm-body h1 { font-size: 14px;   }
+.pending-confirm-body h2 { font-size: 13px;   }
+.pending-confirm-body h3 { font-size: 12.5px; }
+.pending-confirm-body p  { margin: 3px 0; }
+.pending-confirm-body ul, .pending-confirm-body ol { padding-left: 20px; margin: 4px 0; }
+.pending-confirm-body li { margin: 1px 0; }
+.pending-confirm-body strong { color: var(--text-strong); }
+.pending-confirm-body em     { color: var(--c-yellow); font-style: italic; }
+.pending-confirm-body a      { color: var(--c-purple-soft); }
+.pending-confirm-body blockquote {
   margin: 4px 0;
   padding: 2px 8px;
   border-left: 2px solid var(--c-purple);
   color: var(--text-muted);
 }
-.pending-card-body hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
-.pending-card-body table {
+.pending-confirm-body hr { border: none; border-top: 1px solid var(--border); margin: 6px 0; }
+.pending-confirm-body table {
   border-collapse: collapse;
   font-size: 11px;
   margin: 4px 0;
@@ -2488,7 +2476,7 @@ body.resizing, body.resizing * {
   width: 100%;
   overflow-x: auto;
 }
-.pending-card-body th, .pending-card-body td {
+.pending-confirm-body th, .pending-confirm-body td {
   border: 1px solid var(--border);
   padding: 3px 6px;
 }
@@ -2648,4 +2636,48 @@ body.resizing, body.resizing * {
 }
 .ssh-status-bar .ssh-disconnect:hover { text-decoration: underline; }
 
-.pending-card-body th { background: var(--bg-base); color: var(--text-strong); }
+.pending-confirm-body th { background: var(--bg-base); color: var(--text-strong); }
+
+/* ───── 文件树右键菜单 ───── */
+.ctx-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 168px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.35), 0 2px 6px rgba(0,0,0,.2);
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--text);
+  user-select: none;
+}
+.ctx-menu.hidden { display: none; }
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ctx-item:hover { background: var(--accent); color: #fff; }
+.ctx-item .ctx-icon { width: 16px; text-align: center; opacity: .7; }
+.ctx-item:hover .ctx-icon { opacity: 1; }
+.ctx-divider { height: 1px; margin: 4px 8px; background: var(--border); }
+.ctx-item.ctx-danger { color: #ff7676; }
+.ctx-item.ctx-danger:hover { background: #c0392b; color: #fff; }
+.ctx-item.ctx-disabled { opacity: .45; pointer-events: none; }
+
+/* 重命名 inline input */
+.file-rename-input {
+  width: 100%;
+  background: var(--bg-base);
+  color: var(--text-strong);
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font: inherit;
+  outline: none;
+}
+.file-rename-input:focus { box-shadow: 0 0 0 2px rgba(74,158,255,.3); }

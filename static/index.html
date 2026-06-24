@@ -221,19 +221,6 @@
         </div>
       </div>
 
-      <!-- 待确认卡片(plan/文件操作) -->
-      <div class="pending-card hidden" id="pending-card">
-        <div class="pending-card-head">
-          <span class="pending-card-title" id="pending-title">⚠ 待确认</span>
-          <span class="pending-card-action" id="pending-action"></span>
-        </div>
-        <pre class="pending-card-body" id="pending-body"></pre>
-        <div class="pending-card-actions">
-          <button class="pending-btn pending-btn-ok" id="pending-confirm">确认</button>
-          <button class="pending-btn pending-btn-no" id="pending-reject">拒绝</button>
-        </div>
-      </div>
-
       <div class="ai-messages" id="ai-messages">
         <div class="msg msg-assistant">
           <div class="msg-label">Assistant</div>
@@ -333,6 +320,9 @@
     </div>
   </div>
 </div>
+
+<!-- 文件树右键菜单(单例,appendChild 到 body) -->
+<div class="ctx-menu hidden" id="file-ctx-menu" role="menu"></div>
 
 <script src="/static/app.js"></script>
 </body>

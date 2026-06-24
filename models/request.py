@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import threading
+import time
 from pathlib import Path
 from openai import OpenAI
 
@@ -307,3 +309,100 @@ def request_stream(
             tool_calls=tool_calls or None,
         ),
     }
+
+
+# ============================================================================
+#  热更新:监听 model.json 文件变化,自动 reload_config()
+# ----------------------------------------------------------------------------
+#  设计要点:
+#   1. watchdog 不可用 → 静默退化,只支持 /api/models 手动 reload
+#   2. 防抖 250ms:VSCode/Vim 一次保存会触发多个事件(modify + modify + ...)
+#   3. 监听父目录再过滤文件名:有些编辑器是"写到 tmp + rename",
+#      直接监听文件路径在 rename 那一刻会丢失
+#   4. 后台 daemon 线程,进程退出时随主线程一起死
+# ============================================================================
+try:
+    from watchdog.observers import Observer
+    from watchdog.events import FileSystemEventHandler, FileSystemEvent
+    _HAS_WATCHDOG = True
+except Exception:  # ImportError / 平台不支持
+    _HAS_WATCHDOG = False
+
+_WATCH_DEBOUNCE = 0.25   # 秒
+_watcher_started = False
+_watcher_lock = threading.Lock()
+
+
+class _ModelFileHandler(FileSystemEventHandler if _HAS_WATCHDOG else object):
+    """model.json 改动后,debounce 再 reload。"""
+    def __init__(self, target: Path):
+        self._target = target.resolve()
+        self._timer: threading.Timer | None = None
+        self._lock = threading.Lock()
+
+    def _is_target(self, event: "FileSystemEvent") -> bool:
+        try:
+            p = Path(getattr(event, "dest_path", None) or event.src_path).resolve()
+        except Exception:
+            return False
+        return p == self._target
+
+    def _trigger(self):
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+            self._timer = threading.Timer(_WATCH_DEBOUNCE, _safe_reload)
+            self._timer.daemon = True
+            self._timer.start()
+
+    if _HAS_WATCHDOG:
+        def on_modified(self, event):
+            if not event.is_directory and self._is_target(event):
+                self._trigger()
+        def on_created(self, event):
+            if not event.is_directory and self._is_target(event):
+                self._trigger()
+        def on_moved(self, event):
+            # 编辑器常用 "写到 tmp → rename" 的原子保存
+            if not event.is_directory and self._is_target(event):
+                self._trigger()
+
+
+def _safe_reload():
+    """线程安全的 reload,出错只打日志不抛。"""
+    try:
+        cfg = reload_config()
+        print(f"[models] hot-reloaded: current={cfg.get('current_model')!r} "
+              f"models={len(cfg.get('models', []))}", flush=True)
+    except Exception as e:
+        print(f"[models] hot-reload failed: {type(e).__name__}: {e}", flush=True)
+
+
+def start_watcher(daemon: bool = True) -> bool:
+    """
+    启动 model.json 文件监听(只启动一次,重复调用安全)。
+    Returns: True 表示监听已就绪,False 表示退化(无 watchdog 或启动失败)。
+    """
+    global _watcher_started
+    with _watcher_lock:
+        if _watcher_started:
+            return True
+        if not _HAS_WATCHDOG:
+            return False
+        try:
+            watch_dir = _CONFIG_PATH.resolve().parent
+            handler = _ModelFileHandler(_CONFIG_PATH)
+            obs = Observer()
+            obs.schedule(handler, str(watch_dir), recursive=False)
+            obs.daemon = daemon
+            obs.start()
+            _watcher_started = True
+            print(f"[models] watching {_CONFIG_PATH} (debounce {_WATCH_DEBOUNCE}s)", flush=True)
+            return True
+        except Exception as e:
+            print(f"[models] watcher start failed: {type(e).__name__}: {e}", flush=True)
+            return False
+
+
+# 模块导入即启动(失败也不影响主流程)
+start_watcher()

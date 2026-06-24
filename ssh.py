@@ -112,7 +112,7 @@ class SshSession:
         """同步打开 SSH 连接,失败抛 RuntimeError。"""
         if self._closed:
             raise RuntimeError('session closed')
-        if self._conn and not self._conn.is_closed:
+        if self._conn and not self._conn.is_closed():
             return
 
         async def _do_connect():
@@ -165,7 +165,7 @@ class SshSession:
             'host':       self.host,
             'port':       self.port,
             'user':       self.user,
-            'connected':  bool(self._conn and not self._conn.is_closed),
+            'connected':  bool(self._conn) and not self._conn.is_closed(),
             'closed':     self._closed,
             'created_at': self.created_at,
         }
@@ -173,7 +173,7 @@ class SshSession:
     # ---------- 跑命令 ----------
     def exec(self, command: str, cwd: str = '', timeout: int = _DEFAULT_TIMEOUT) -> dict:
         """在远端跑一条命令,捕获 stdout/stderr/exit_code。"""
-        if not self._conn or self._conn.is_closed:
+        if not self._conn or self._conn.is_closed():
             return {'ok': False, 'error': 'not connected', 'command': command}
         with self._cmd_lock:
             async def _do_exec():
@@ -206,14 +206,18 @@ class SshSession:
         """列目录。返回 [{name, type, size, mtime, path}]"""
         try:
             sftp = self._ensure_sftp()
-            real = sftp.realpath(path) if path else sftp.getcwd()
+            async def _resolve_and_list():
+                # asyncssh 2.x: realpath 是协程,要 await
+                rp = await sftp.realpath(path) if path else (await sftp.getcwd() or '.')
+                return await _async_list(sftp, rp)
+            real_items = self._loop.submit(_resolve_and_list(), timeout=_DEFAULT_TIMEOUT)
         except Exception as e:
-            return {'ok': False, 'error': f'路径无效: {e}', 'path': path}
-        try:
-            items = self._loop.submit(_async_list(sftp, real), timeout=_DEFAULT_TIMEOUT)
-        except Exception as e:
-            return {'ok': False, 'error': f'{type(e).__name__}: {e}', 'path': real}
-        return {'ok': True, 'path': real, 'items': items}
+            return {'ok': False, 'error': f'{type(e).__name__}: {e}', 'path': path}
+        return {
+            'ok':    True,
+            'path':  path,                # 用户传的原路径(已 resolve)
+            'items': real_items,
+        }
 
     def read_file(self, path: str, max_bytes: int = 2 * 1024 * 1024) -> dict:
         try:
@@ -244,7 +248,7 @@ class SshSession:
         if self._closed:
             return
         self._closed = True
-        if self._conn and not self._conn.is_closed:
+        if self._conn and not self._conn.is_closed():
             try:
                 self._loop.submit(self._conn.close(), timeout=3)
             except Exception:
@@ -255,18 +259,28 @@ class SshSession:
 
 async def _async_list(sftp, path):
     items = []
-    for attr in await sftp.listdir_attr(path):
-        name = attr.filename
+    # asyncssh: readdir 返回 SFTPName 列表,每个 SFTPName.filename 是名字,.attrs 是 SFTPAttrs
+    for entry in await sftp.readdir(path):
+        name = entry.filename
         if name in ('.', '..'):
             continue
         full = (path.rstrip('/') + '/' + name) if path != '/' else '/' + name
-        is_dir = attr.permissions is not None and (attr.permissions & 0o40000) != 0
+        a = entry.attrs
+        # 优先用 SFTPAttrs.type(SFTPv4+),否则 fallback permissions
+        is_dir = False
+        if a is not None:
+            if getattr(a, 'type', None) is not None:
+                # SFTP 协议规定 0o4xxxx = 目录(参照 SFTP 规范的 type 字段)
+                is_dir = (a.type & 0o170000) == 0o040000
+            else:
+                perms = a.permissions or 0
+                is_dir = (perms & 0o40000) != 0
         items.append({
             'name':  name,
             'path':  full,
             'type':  'folder' if is_dir else 'file',
-            'size':  attr.size or 0,
-            'mtime': attr.mtime or 0,
+            'size':  (a.size if a and a.size else 0) or 0,
+            'mtime': (a.mtime if a and a.mtime else 0) or 0,
         })
     items.sort(key=lambda x: (x['type'] != 'folder', x['name'].lower()))
     return items

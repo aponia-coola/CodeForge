@@ -5,7 +5,7 @@
       "id": "MiniMax-M3",
       "name": "MiniMax-M3",
       "vendor": "MiniMax",
-      "apiKey": "sk-cp-QRz1k081mNqMN6TOb9NIjdx_SlpsokoIDxxDJOM2e0srlmD1F_w0Xj5D2Ymhd7Cwsz0NPHEac3u0Q0BO0H3o1EdJEOwgtRU6XlhCptamUcqb4r2npgtF74s",
+      "apiKey": "sk-cp-va7SuoC2XCe8bl8joLlqRbGKYpbPArL0ZjF-SszDWgcLrAsTsH3-xF-i_2QZJsFo_1OXFZ7brtG3ucdnPnrUlmrupLuVIFa5aXFjd768UBlbz-_xxOnm9zM",
       "url": "https://api.minimaxi.com/v1/chat/completions",
       "maxInputTokens": 1000000,
       "maxOutputTokens": 8192,

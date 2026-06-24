@@ -45,9 +45,11 @@ def snapshot_after(path: str, op: str) -> None:
 
 
 def list_pending() -> list[dict]:
-    """返回所有待展示的 diff 列表。"""
+    """返回所有待展示的 diff 列表(过滤掉 remove:删除已完成,无需在前端二次确认)。"""
     out = []
     for path, d in _DIFFS.items():
+        if d["op"] == "remove":
+            continue
         out.append({
             "path": path,
             "name": path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1],

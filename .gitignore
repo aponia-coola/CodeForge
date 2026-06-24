@@ -4,4 +4,8 @@ __pycache__/
 .codebuddy/
 .trae/
 .vscode/
-.
+
+# 日志统一到 log/ 目录,根目录的旧文件也忽略
+log/*.log
+server.log
+server.err.log

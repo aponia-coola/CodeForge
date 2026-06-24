@@ -665,6 +665,111 @@ def api_file_save():
     except OSError as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+
+@app.post('/api/file/rename')
+def api_file_rename():
+    """
+    重命名(同目录下换名,等价于 move)。
+    Body: {"path": "<abs>", "new_name": "<filename without sep>"}
+    """
+    data  = flask_request.get_json(silent=True) or {}
+    path  = (data.get('path') or '').strip()
+    new_n = (data.get('new_name') or '').strip()
+    if not path or not new_n:
+        return jsonify({"ok": False, "error": "缺少 path 或 new_name"}), 400
+    if '/' in new_n or '\\' in new_n:
+        return jsonify({"ok": False, "error": "new_name 不能含路径分隔符"}), 400
+    if not os.path.exists(path):
+        return jsonify({"ok": False, "error": f"源不存在: {path}"}), 404
+    new_path = os.path.join(os.path.dirname(path), new_n)
+    if os.path.abspath(new_path) == os.path.abspath(path):
+        return jsonify({"ok": True, "path": path})    # 名字没变
+    if os.path.exists(new_path):
+        return jsonify({"ok": False, "error": f"目标已存在: {new_n}"}), 409
+    try:
+        os.rename(path, new_path)
+        return jsonify({"ok": True, "path": new_path})
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post('/api/file/duplicate')
+def api_file_duplicate():
+    """
+    复制一份到同目录(自动加 _copy / _copy(N) 后缀,避免覆盖)。
+    Body: {"path": "<abs>"}  →  返回新文件路径。
+    """
+    data = flask_request.get_json(silent=True) or {}
+    path = (data.get('path') or '').strip()
+    if not path:
+        return jsonify({"ok": False, "error": "缺少 path"}), 400
+    if not os.path.isfile(path):
+        return jsonify({"ok": False, "error": "不是文件(可能是目录)"}), 400
+    base, ext = os.path.splitext(path)
+    parent    = os.path.dirname(path)
+    bare      = os.path.basename(base)
+    new_path  = os.path.join(parent, f"{bare}_copy{ext}")
+    n = 2
+    while os.path.exists(new_path):
+        new_path = os.path.join(parent, f"{bare}_copy({n}){ext}")
+        n += 1
+    try:
+        import shutil
+        shutil.copy2(path, new_path)
+        return jsonify({"ok": True, "path": new_path})
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post('/api/file/move')
+def api_file_move():
+    """
+    移动文件到目标目录(支持重命名)。
+    Body: {"path": "<abs>", "to_dir": "<abs dir>", "new_name": "<filename> (optional)"}
+    """
+    data    = flask_request.get_json(silent=True) or {}
+    path    = (data.get('path') or '').strip()
+    to_dir  = (data.get('to_dir') or '').strip()
+    new_n   = (data.get('new_name') or '').strip() or os.path.basename(path)
+    if not path or not to_dir:
+        return jsonify({"ok": False, "error": "缺少 path 或 to_dir"}), 400
+    if '/' in new_n or '\\' in new_n:
+        return jsonify({"ok": False, "error": "new_name 不能含路径分隔符"}), 400
+    if not os.path.exists(path):
+        return jsonify({"ok": False, "error": f"源不存在: {path}"}), 404
+    if not os.path.isdir(to_dir):
+        return jsonify({"ok": False, "error": f"目标目录不存在: {to_dir}"}), 400
+    new_path = os.path.join(to_dir, new_n)
+    if os.path.exists(new_path):
+        return jsonify({"ok": False, "error": f"目标已存在: {new_n}"}), 409
+    try:
+        os.rename(path, new_path)
+        return jsonify({"ok": True, "path": new_path})
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post('/api/file/delete')
+def api_file_delete():
+    """
+    删除文件(仅限文件,目录请用 /api/folder/delete)。
+    Body: {"path": "<abs>"}
+    """
+    data = flask_request.get_json(silent=True) or {}
+    path = (data.get('path') or '').strip()
+    if not path:
+        return jsonify({"ok": False, "error": "缺少 path"}), 400
+    if not os.path.exists(path):
+        return jsonify({"ok": False, "error": f"文件不存在: {path}"}), 404
+    if not os.path.isfile(path):
+        return jsonify({"ok": False, "error": "不是文件(可能是目录)"}), 400
+    try:
+        os.remove(path)
+        return jsonify({"ok": True})
+    except OSError as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 # ════════════════════════════════════════════════════════════
 #                      SSH 远程会话
 # ════════════════════════════════════════════════════════════
@@ -785,4 +890,10 @@ def api_terminal_run():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=9191, debug=True)
+    import argparse, os
+    p = argparse.ArgumentParser(add_help=True)
+    p.add_argument('--host', default=os.environ.get('CODEFORGE_HOST', '0.0.0.0'))
+    p.add_argument('--port', type=int, default=int(os.environ.get('CODEFORGE_PORT', '9191')))
+    p.add_argument('--debug', action='store_true', default=os.environ.get('CODEFORGE_DEBUG', '1') not in ('0', 'false', 'False', ''))
+    a = p.parse_args()
+    app.run(host=a.host, port=a.port, debug=a.debug)

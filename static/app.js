@@ -249,6 +249,8 @@
   const explorer = document.querySelector('.explorer');
   const sidebar = document.querySelector('.sidebar');
   const openFolderBtn = document.querySelector('.empty-btn[data-action="open-folder"]');
+  // 提前声明:context menu 里的"删除"回调可能也要清空它
+  let currentEditor = null;
   if (explorer && openFolderBtn) {
     // 空状态紫色按钮:
     //   1) 打开默认家目录 → 文件树
@@ -1182,11 +1184,217 @@
     icon.textContent = fileExt(file.name);
     row.appendChild(icon);
     const name = document.createElement('span');
+    name.className = 'file-row-name';
     name.textContent = file.name;
     row.appendChild(name);
     row.title = file.path;
     return row;
   }
+
+  // ──────── 文件树右键菜单 / 长按菜单 ────────
+  const ctxMenuEl = document.getElementById('file-ctx-menu');
+  let ctxTargetPath = null;     // 当前菜单对应的文件路径
+  let longPressTimer = null;    // 长按定时器
+  let longPressTriggered = false;
+
+  function hideFileMenu() {
+    if (!ctxMenuEl) return;
+    ctxMenuEl.classList.add('hidden');
+    ctxTargetPath = null;
+  }
+
+  function showFileMenu(filePath, x, y) {
+    if (!ctxMenuEl) return;
+    ctxTargetPath = filePath;
+    ctxMenuEl.innerHTML = '';
+    const items = [
+      { icon: '💬', label: '添加到对话', action: () => {
+        if (!aiInput) return;
+        const cur = aiInput.value.trimEnd();
+        aiInput.value = (cur ? cur + ' ' : '') + '@"' + filePath + '"';
+        autoResize();
+        aiInput.focus();
+      }},
+      { icon: '✏️', label: '重命名',        action: () => beginInlineRename(filePath) },
+      { icon: '⎘', label: '复制文件(同目录生成 _copy)',  action: async () => {
+        try {
+          const r = await fetch('/api/file/duplicate', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({path: filePath}),
+          });
+          const d = await safeJson(r);
+          if (d.ok) { appendStatus('已复制: ' + d.path); }
+          else { appendStatus('复制失败: ' + (d.error || '未知')); return; }
+        } catch (e) { appendStatus('复制失败: ' + e); return; }
+        treeSignature.clear();
+        pollPath(currentRoot);
+        for (const p of expandedFolders) pollPath(p);
+      }},
+      { icon: '🔗', label: '复制路径到剪贴板', action: async () => {
+        try {
+          await navigator.clipboard.writeText(filePath);
+          appendStatus('已复制路径');
+        } catch (e) { appendStatus('复制失败: ' + e); }
+      }},
+      { divider: true },
+      { icon: '🗑', label: '删除', danger: true, action: async () => {
+        if (!confirm(`确认删除?\n${filePath}`)) return;
+        try {
+          const r = await fetch('/api/file/delete', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({path: filePath}),
+          });
+          const d = await safeJson(r);
+          if (!d.ok) { appendStatus('删除失败: ' + (d.error || '未知')); return; }
+          appendStatus('已删除: ' + filePath);
+          // 如果该文件正在编辑器里打开,关掉它
+          if (currentEditor && currentEditor.path === filePath) {
+            currentEditor = null;
+            showCenter('welcome');
+          }
+          // 从 diff 列表也清掉
+          try {
+            const r2 = await fetch('/api/diff/clear', {
+              method: 'POST', headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({path: filePath}),
+            });
+            void r2;
+          } catch {}
+        } catch (e) { appendStatus('删除失败: ' + e); return; }
+        treeSignature.clear();
+        pollPath(currentRoot);
+        for (const p of expandedFolders) pollPath(p);
+      }},
+    ];
+    for (const it of items) {
+      if (it.divider) {
+        const d = document.createElement('div');
+        d.className = 'ctx-divider';
+        ctxMenuEl.appendChild(d);
+        continue;
+      }
+      const row = document.createElement('div');
+      row.className = 'ctx-item' + (it.danger ? ' ctx-danger' : '');
+      row.innerHTML = `<span class="ctx-icon">${it.icon}</span><span>${escapeHtml(it.label)}</span>`;
+      row.addEventListener('click', () => { hideFileMenu(); it.action(); });
+      ctxMenuEl.appendChild(row);
+    }
+    // 定位(防止超出视口)
+    ctxMenuEl.classList.remove('hidden');
+    const rect = ctxMenuEl.getBoundingClientRect();
+    const winW = window.innerWidth, winH = window.innerHeight;
+    const px = Math.min(x, winW - rect.width  - 4);
+    const py = Math.min(y, winH - rect.height - 4);
+    ctxMenuEl.style.left = Math.max(0, px) + 'px';
+    ctxMenuEl.style.top  = Math.max(0, py) + 'px';
+  }
+
+  // 内联重命名:把 name span 换成 input,回车保存,Esc 取消
+  function beginInlineRename(filePath) {
+    const row = document.querySelector(`.file[data-path="${CSS.escape(filePath)}"]`);
+    if (!row) return;
+    const nameEl = row.querySelector('.file-row-name');
+    if (!nameEl) return;
+    const oldName = nameEl.textContent;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'file-rename-input';
+    input.value = oldName;
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    let done = false;
+    const finish = async (commit) => {
+      if (done) return;
+      done = true;
+      const newName = input.value.trim();
+      const newSpan = document.createElement('span');
+      newSpan.className = 'file-row-name';
+      newSpan.textContent = newName || oldName;
+      input.replaceWith(newSpan);
+      if (!commit || !newName || newName === oldName) return;
+      try {
+        const r = await fetch('/api/file/rename', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({path: filePath, new_name: newName}),
+        });
+        const d = await safeJson(r);
+        if (!d.ok) {
+          appendStatus('重命名失败: ' + (d.error || '未知'));
+          newSpan.textContent = oldName;
+          return;
+        }
+        appendStatus('已重命名: ' + newName);
+        // 同步行上的 data-path / title
+        row.dataset.path = d.path;
+        row.title = d.path;
+        // 如果该文件正在编辑器里打开,更新引用
+        if (currentEditor && currentEditor.path === filePath) {
+          currentEditor.path = d.path;
+          const tab = document.querySelector('.editor-tab.active');
+          if (tab) tab.dataset.path = d.path;
+        }
+        treeSignature.clear();
+        pollPath(currentRoot);
+        for (const p of expandedFolders) pollPath(p);
+      } catch (e) {
+        appendStatus('重命名失败: ' + e);
+        newSpan.textContent = oldName;
+      }
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter')      { e.preventDefault(); finish(true); }
+      else if (e.key === 'Escape'){ e.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', () => finish(true));
+  }
+
+  // 右键弹菜单
+  if (explorer) {
+    explorer.addEventListener('contextmenu', (e) => {
+      const row = e.target.closest('.file');
+      if (!row) return;
+      e.preventDefault();
+      showFileMenu(row.dataset.path || row.title, e.clientX, e.clientY);
+    });
+
+    // 长按 500ms 弹菜单(移动端 / 触摸屏)
+    const startLongPress = (e, filePath, x, y) => {
+      cancelLongPress();
+      longPressTriggered = false;
+      longPressTimer = setTimeout(() => {
+        longPressTriggered = true;
+        showFileMenu(filePath, x, y);
+      }, 500);
+    };
+    const cancelLongPress = () => {
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    };
+    explorer.addEventListener('touchstart', (e) => {
+      const row = e.target.closest('.file');
+      if (!row) return;
+      const t = e.touches[0];
+      startLongPress(e, row.dataset.path || row.title, t.clientX, t.clientY);
+    }, {passive: true});
+    explorer.addEventListener('touchmove', cancelLongPress, {passive: true});
+    explorer.addEventListener('touchend', (e) => {
+      if (longPressTriggered) { e.preventDefault(); cancelLongPress(); }
+      else cancelLongPress();
+    });
+    explorer.addEventListener('mousedown', (e) => {
+      // 只在非主键或带修饰键时跳过(留给普通左键)
+      if (e.button !== 0) return;
+    });
+  }
+  // 全局关闭:点击别处 / 滚轮 / 滚动
+  document.addEventListener('mousedown', (e) => {
+    if (ctxMenuEl && !ctxMenuEl.classList.contains('hidden')
+        && !ctxMenuEl.contains(e.target)) hideFileMenu();
+  });
+  document.addEventListener('scroll', hideFileMenu, true);
+  window.addEventListener('blur', hideFileMenu);
+  window.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideFileMenu(); });
 
   // ============ 中间区:文件编辑器(CodeMirror + 语法高亮) ============
   // 点击 .file 行 → fetch /api/file/read → 替换 .center 内容
@@ -1201,7 +1409,6 @@
 
   const center = document.querySelector('.center');
   const editorHost = document.getElementById('editor-host');
-  let currentEditor = null;  // {cm, path, name, saved}
 
   // 三态切换:welcome(主页) / editor(编辑器) / diff(diff viewer)
   // 只切 display,不销毁 DOM,确保 diff-viewer / welcome 引用始终有效
@@ -1757,13 +1964,9 @@
   const toggleAuto  = document.getElementById('toggle-auto');
   const chatClear   = document.getElementById('chat-clear');
   const chatRefresh = document.getElementById('chat-refresh');
-  const pendingCard     = document.getElementById('pending-card');
   const pendingBadge    = document.getElementById('pending-badge');
-  const pendingTitle    = document.getElementById('pending-title');
-  const pendingAction   = document.getElementById('pending-action');
-  const pendingBody     = document.getElementById('pending-body');
-  const pendingConfirm  = document.getElementById('pending-confirm');
-  const pendingReject   = document.getElementById('pending-reject');
+  // 当前对话流里的"待确认"气泡节点(同时只可能存在一个;新一次 pending 来时整体替换)
+  let pendingConfirmNode = null;
 
   // 客户端 history(后端也会存,这里再保留一份方便下次进入时直接用)
   let history = [];
@@ -2042,23 +2245,76 @@
       : raw;
   }
 
-  // ──────── 待确认卡片 ────────
+  // ──────── 待确认气泡(对话流内行内确认) ────────
+  // 每次只有一个 pending 气泡;新一次 pending 触发时,旧的先撤掉再插入新的
+  function clearPendingConfirmNode() {
+    if (pendingConfirmNode && pendingConfirmNode.parentNode) {
+      pendingConfirmNode.parentNode.removeChild(pendingConfirmNode);
+    }
+    pendingConfirmNode = null;
+  }
+  function buildPendingConfirmNode(pending) {
+    if (!aiMessages) return null;
+    const action = pending.action || 'tool';
+    const md = pending.markdown
+      || JSON.stringify(pending.args, null, 2)
+      || '';
+
+    const div = document.createElement('div');
+    div.className = 'msg msg-pending-confirm';
+    div.dataset.pending = '1';
+
+    const label = document.createElement('div');
+    label.className = 'msg-label';
+    const labelText = document.createTextNode('⚠ 待确认:');
+    label.appendChild(labelText);
+    const tag = document.createElement('span');
+    tag.className = 'pending-action-tag';
+    tag.textContent = action;
+    label.appendChild(tag);
+
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+
+    const body = document.createElement('div');
+    body.className = 'pending-confirm-body';
+    body.innerHTML = formatMarkdownLite(md);
+
+    const actions = document.createElement('div');
+    actions.className = 'pending-confirm-actions';
+    const btnOk = document.createElement('button');
+    btnOk.type = 'button';
+    btnOk.className = 'pending-confirm-btn pending-confirm-ok';
+    btnOk.dataset.action = 'confirm';
+    btnOk.textContent = '确认';
+    const btnNo = document.createElement('button');
+    btnNo.type = 'button';
+    btnNo.className = 'pending-confirm-btn pending-confirm-no';
+    btnNo.dataset.action = 'reject';
+    btnNo.textContent = '拒绝';
+    actions.appendChild(btnOk);
+    actions.appendChild(btnNo);
+
+    bubble.appendChild(body);
+    bubble.appendChild(actions);
+    div.appendChild(label);
+    div.appendChild(bubble);
+    return div;
+  }
   function renderPending(pending) {
+    clearPendingConfirmNode();
     if (!pending) {
-      if (pendingCard)  pendingCard.classList.add('hidden');
       if (pendingBadge) pendingBadge.classList.add('hidden');
       return;
     }
-    if (pendingCard)  pendingCard.classList.remove('hidden');
     if (pendingBadge) pendingBadge.classList.remove('hidden');
-    if (pendingAction) pendingAction.textContent = pending.action || '';
-    if (pendingTitle)  pendingTitle.textContent = '⚠ 待确认:' + (pending.action || '');
-    if (pendingBody) {
-      const md = pending.markdown
-        || JSON.stringify(pending.args, null, 2)
-        || '';
-      pendingBody.innerHTML = formatMarkdownLite(md);
-    }
+    if (!aiMessages) return;
+    // 插到流末尾(此时 loading 已经被移除,等价于追加在对话末尾)
+    const node = buildPendingConfirmNode(pending);
+    if (!node) return;
+    aiMessages.appendChild(node);
+    pendingConfirmNode = node;
+    scrollToBottom();
   }
 
   // ──────── 发送消息(流式) ────────
@@ -2082,62 +2338,105 @@
     const loading = appendLoading();
     setAgentLight('running');
 
-    // 跟踪当前 round/max,用来拼状态文字
-    let roundNow = 0, roundMax = 0, lastTool = '';
-    // 本轮改动的文件数(直接用后端 diff 列表长度,已按路径去重)
+    try {
+      // 网络层重试:只在 fetch 抛 TypeError(network error / 断网 / 服务关闭)时重试
+      // HTTP 4xx/5xx / SSE 解析错误 / 业务 error 不重试
+      const MAX_NET_RETRY = 3;
+      const BACKOFF_MS    = [1000, 2000, 4000];
+      const isNetError    = (e) => {
+        if (!e) return false;
+        const msg = (e.message || String(e) || '').toLowerCase();
+        return e instanceof TypeError ||
+               msg.includes('network error') ||
+               msg.includes('failed to fetch')  ||
+               msg.includes('load failed')     ||
+               msg.includes('networkerror');
+      };
+
+      for (let attempt = 1; attempt <= MAX_NET_RETRY; attempt++) {
+        try {
+          await streamChatOnce(loading, text);
+          return;                       // 成功:跳出
+        } catch (err) {
+          if (!isNetError(err) || attempt >= MAX_NET_RETRY) {
+            if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
+            setAgentLight('error');
+            const label = attempt > 1 ? ` (重试 ${attempt - 1} 次后失败)` : '';
+            appendStatus('✗ 请求失败' + label + ': ' + err);
+            return;
+          }
+          // 网络错误且还能再试:倒计时退避 + 状态行提示
+          const wait = BACKOFF_MS[attempt - 1] || 4000;
+          setLoadingStatus(loading, `网络中断,${Math.round(wait / 1000)}s 后重试(${attempt}/${MAX_NET_RETRY})…`);
+          if (aiStatus) aiStatus.textContent = `重连中 ${attempt}/${MAX_NET_RETRY}…`;
+          await new Promise(r => setTimeout(r, wait));
+        }
+      }
+    } finally {
+      sending = false;
+      sendBtn && (sendBtn.disabled = false);
+      if (aiStatus) aiStatus.textContent = 'Enter 发送 · Shift+Enter 换行';
+      aiInput && aiInput.focus();
+    }
+  }
+
+  // 单次流式请求(fetch + SSE 解析 + UI 渲染)。
+  // 网络层错误往外抛,业务/解析错误走 appendStatus 报告后正常返回。
+  async function streamChatOnce(loading, text) {
+
+    const resp = await fetch('/api/chat/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: text,
+        history: history,
+        cwd: currentRoot || null,
+        plan_model: togglePlan ? togglePlan.checked : null,
+        max_rounds: appConfig.max_round || 20,
+        flow: appConfig.flow,
+      }),
+    });
+    if (!resp.ok || !resp.body) {
+      throw new Error(`HTTP ${resp.status}`);
+    }
+
+    const reader  = resp.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buf = '';
+    let finalData = null;
+    // 流式输出:思考块 + 正文块
+    let thinkEl  = null, thinkTextEl = null;
+    let answerEl = null, answerTextEl = null;
+    let streamedAnswer = false;
+    // 跨事件用的瞬态变量(原本是 sendMessage 的局部变量,函数拆分后归到本函数内)
+    let lastTool = '';
     let diffsThisTurn = 0;
 
-    try {
-      const resp = await fetch('/api/chat/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: text,
-          history: history,
-          cwd: currentRoot || null,
-          plan_model: togglePlan ? togglePlan.checked : null,
-          max_rounds: appConfig.max_round || 20,
-          flow: appConfig.flow,
-        }),
-      });
-      if (!resp.ok || !resp.body) {
-        throw new Error(`HTTP ${resp.status}`);
-      }
-
-      const reader  = resp.body.getReader();
-      const decoder = new TextDecoder('utf-8');
-      let buf = '';
-      let finalData = null;
-      // 流式输出:思考块 + 正文块
-      let thinkEl  = null, thinkTextEl = null;
-      let answerEl = null, answerTextEl = null;
-      let streamedAnswer = false;
-
-      // SSE 解析:按 \n\n 分块,每块含 event/data 行
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        let idx;
-        while ((idx = buf.indexOf('\n\n')) !== -1) {
-          const block = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          const lines = block.split('\n');
-          let evName = 'message', evData = null;
-          for (const ln of lines) {
-            if (ln.startsWith('event:')) evName = ln.slice(6).trim();
-            else if (ln.startsWith('data:')) {
-              try { evData = JSON.parse(ln.slice(5).trim()); }
-              catch { evData = ln.slice(5).trim(); }
-            }
+    // SSE 解析:按 \n\n 分块,每块含 event/data 行
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const lines = block.split('\n');
+        let evName = 'message', evData = null;
+        for (const ln of lines) {
+          if (ln.startsWith('event:')) evName = ln.slice(6).trim();
+          else if (ln.startsWith('data:')) {
+            try { evData = JSON.parse(ln.slice(5).trim()); }
+            catch { evData = ln.slice(5).trim(); }
           }
-          if (!evData) continue;
+        }
+        if (!evData) continue;
 
-          if (evName === 'start') {
-            setLoadingStatus(loading, '开始运行…');
-          } else if (evName === 'round') {
-            setLoadingStatus(loading, '调用模型…');
-          } else if (evName === 'reasoning_delta') {
+        if (evName === 'start') {
+          setLoadingStatus(loading, '开始运行…');
+        } else if (evName === 'round') {
+          setLoadingStatus(loading, '调用模型…');
+        } else if (evName === 'reasoning_delta') {
             // 思考过程:小字、斜体、dim
             if (!thinkEl) {
               const built = makeStreamBubble(loading, 'msg-thinking');
@@ -2220,7 +2519,7 @@
       renderPending(finalData.pending);
       if (finalData.pending) {
         setAgentLight('plan');
-        appendStatus('⏸ 等待用户确认(见上方卡片)');
+        appendStatus('⏸ 等待用户确认(见对话流)');
       } else if (finalData.stopped === 'error') {
         setAgentLight('error');
         appendStatus('✗ 错误,已停止');
@@ -2232,16 +2531,6 @@
         // 完成行:用本轮新增的 diff 数(不累计旧值)
         appendCompleteStatus(diffsThisTurn);
       }
-    } catch (err) {
-      if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
-      setAgentLight('error');
-      appendStatus('✗ 请求失败: ' + err);
-    } finally {
-      sending = false;
-      sendBtn && (sendBtn.disabled = false);
-      if (aiStatus) aiStatus.textContent = 'Enter 发送 · Shift+Enter 换行';
-      aiInput && aiInput.focus();
-    }
   }
 
   // 把节点插到 loading 之前(便于流式把"调用工具 / 工具结果"逐条插到进度条上方)
@@ -2413,15 +2702,25 @@
         .catch(err => console.error(err));
     });
   }
-  if (pendingConfirm) {
-    pendingConfirm.addEventListener('click', () => {
-      // 乐观关闭:用户已点确认,先把卡片收掉,避免等待后端响应
-      renderPending(null);
-      // 同步通知后端清 pending(双保险,即便后端先于 chat 响应到达也不冲突)
-      fetch('/api/agent/pending/confirm', { method: 'POST' }).catch(() => {});
-      if (aiInput) {
-        aiInput.value = '确认';
-        sendMessage();
+  // 待确认气泡的"确认 / 拒绝"按钮(对话流内):事件代理到 aiMessages
+  if (aiMessages) {
+    aiMessages.addEventListener('click', (e) => {
+      const btn = e.target.closest('.pending-confirm-btn');
+      if (!btn) return;
+      const act = btn.dataset.action;
+      if (act === 'confirm') {
+        // 乐观关闭:用户已点确认,先把气泡收掉,避免等待后端响应
+        renderPending(null);
+        fetch('/api/agent/pending/confirm', { method: 'POST' }).catch(() => {});
+        if (aiInput) {
+          aiInput.value = '确认';
+          sendMessage();
+        }
+      } else if (act === 'reject') {
+        fetch('/api/agent/pending/reject', { method: 'POST' })
+          .then(r => r.json())
+          .then(() => { renderPending(null); appendStatus('✗ 已拒绝当前操作'); })
+          .catch(err => console.error(err));
       }
     });
   }
@@ -2434,7 +2733,6 @@
       termCollapse.title = collapsed ? '展开终端' : '收起终端';
     });
   }
-
   // 终端多线程会话:每个会话独立 history,cwd,tab
   const termBody     = document.getElementById('term-body');
   const termInput    = document.getElementById('term-input');
@@ -2833,15 +3131,6 @@
       if (first) setActiveSsh(first.id);
     }
   });
-
-  if (pendingReject) {
-    pendingReject.addEventListener('click', () => {
-      fetch('/api/agent/pending/reject', { method: 'POST' })
-        .then(r => r.json())
-        .then(() => { renderPending(null); appendStatus('✗ 已拒绝当前操作'); })
-        .catch(err => console.error(err));
-    });
-  }
 
   // ──────── 全局快捷键:聚焦输入框 ────────
   document.addEventListener('keydown', e => {
