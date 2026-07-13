@@ -32,6 +32,19 @@
     <span class="wc-min"></span>
     <span class="wc-max"></span>
   </div>
+  <!-- 工具调用面板(点击展开/折叠) -->
+  <div class="tool-panel" id="tool-panel">
+    <button class="tool-panel-toggle" id="tool-panel-toggle" title="工具调用">
+      🔧 <span class="tool-panel-badge" id="tool-panel-badge">0</span>
+    </button>
+    <div class="tool-panel-body" id="tool-panel-body" hidden>
+      <div class="tool-panel-header">
+        <span>工具调用</span>
+        <button class="tool-panel-clear" id="tool-panel-clear" title="清空">清空</button>
+      </div>
+      <div class="tool-panel-list" id="tool-panel-list"></div>
+    </div>
+  </div>
   <div class="topbar-title">CodeForge</div>
   <div class="theme-switch" id="theme-switch">
     <button class="theme-btn" data-theme="dark"  title="黑夜模式">🌙</button>

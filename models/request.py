@@ -79,6 +79,11 @@ _BASE_URL: str = _current_base_url()
 _API_KEY: str = _current_api_key()
 
 
+def _is_minimax() -> bool:
+    """当前模型是否 MiniMax 家族。MiniMax 才支持 reasoning_split 私有扩展。"""
+    return 'minimax' in (_CURRENT_MODEL or '').lower()
+
+
 def _filtered_models() -> list[dict]:
     """返回前端可见的模型简表 [{id, name}],遵守 availableModels 白名单。"""
     out = []
@@ -213,8 +218,8 @@ def request(
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
-    if use_thinking:
-       kwargs["extra_body"] = {"reasoning_split": True}
+    if use_thinking and _is_minimax():
+        kwargs["extra_body"] = {"reasoning_split": True}
 
     return _client.chat.completions.create(**kwargs).choices[0].message
 
@@ -245,7 +250,7 @@ def request_stream(
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
-    if use_thinking:
+    if use_thinking and _is_minimax():
         kwargs["extra_body"] = {"reasoning_split": True}
 
     stream = _client.chat.completions.create(**kwargs)

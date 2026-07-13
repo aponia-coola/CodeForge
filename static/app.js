@@ -1971,6 +1971,7 @@
   // 客户端 history(后端也会存,这里再保留一份方便下次进入时直接用)
   let history = [];
   let sending = false;
+  let streamAbort = null;   // 当前流式请求的 AbortController,点击"停止"时调用 .abort()
 
   // ──────── 初始化:拉 history + agent state ────────
   function loadChat() {
@@ -2164,8 +2165,8 @@
     div.innerHTML = `
       <div class="msg-label">Assistant</div>
       <div class="msg-bubble">
-        <span class="dot"></span><span class="dot"></span><span class="dot"></span>
-        <span class="msg-loading-status">开始运行…</span>
+        <span class="spinner"></span>
+        <span class="msg-loading-status">思考中…</span>
       </div>`;
     aiMessages.appendChild(div);
     scrollToBottom();
@@ -2325,8 +2326,13 @@
     if (!text) return;
 
     sending = true;
-    sendBtn && (sendBtn.disabled = true);
-    if (aiStatus) aiStatus.textContent = '思考中…';
+    streamAbort = new AbortController();
+    if (sendBtn) {
+      sendBtn.disabled = false;  // 运行时允许点击以"停止"
+      sendBtn.classList.add('send-btn-stop');
+      sendBtn.innerHTML = '<span>■</span> 停止';
+    }
+    if (aiStatus) aiStatus.textContent = '运行中…';
 
     // 1. 立即把用户消息渲染上去
     appendMessage('user', text);
@@ -2374,7 +2380,12 @@
       }
     } finally {
       sending = false;
-      sendBtn && (sendBtn.disabled = false);
+      streamAbort = null;
+      if (sendBtn) {
+        sendBtn.disabled = false;
+        sendBtn.classList.remove('send-btn-stop');
+        sendBtn.innerHTML = '<svg viewBox="0 0 16 16" width="10" height="10" fill="currentColor"><path d="M2 2l12 6L2 14l2.5-6L2 2z"></path></svg> 发送';
+      }
       if (aiStatus) aiStatus.textContent = 'Enter 发送 · Shift+Enter 换行';
       aiInput && aiInput.focus();
     }
@@ -2395,6 +2406,7 @@
         max_rounds: appConfig.max_round || 20,
         flow: appConfig.flow,
       }),
+      signal: streamAbort ? streamAbort.signal : null,
     });
     if (!resp.ok || !resp.body) {
       throw new Error(`HTTP ${resp.status}`);
@@ -2573,32 +2585,87 @@
     return { bubble, text };
   }
   // 流式插入用的两个原始构造器,跟 appendToolCall/appendToolResult 等价但不依赖外部状态
-  function appendToolCallRaw(tc) {
-    const div = document.createElement('div');
-    div.className = 'msg msg-tool';
-    div.innerHTML = `
-      <div class="msg-label">🔧 调用工具:<span class="tool-name"> ${escapeHtml(tc.function.name || 'tool')}</span></div>`;
-    return div;
+  // ── 工具调用面板(顶栏左侧折叠面板) ──
+  const toolPanelEl       = document.getElementById('tool-panel');
+  const toolPanelToggle   = document.getElementById('tool-panel-toggle');
+  const toolPanelBody     = document.getElementById('tool-panel-body');
+  const toolPanelList     = document.getElementById('tool-panel-list');
+  const toolPanelBadge    = document.getElementById('tool-panel-badge');
+  const toolPanelClear    = document.getElementById('tool-panel-clear');
+  let toolPanelCount = 0;
+
+  if (toolPanelToggle) {
+    toolPanelToggle.addEventListener('click', e => {
+      e.stopPropagation();
+      if (!toolPanelBody) return;
+      const willShow = toolPanelBody.hasAttribute('hidden');
+      if (willShow) toolPanelBody.removeAttribute('hidden');
+      else toolPanelBody.setAttribute('hidden', '');
+    });
   }
-  function appendToolResultRaw(m) {
-    const txt = (m.content || '').toString();
+  // 点页面其他位置关闭
+  document.addEventListener('click', e => {
+    if (!toolPanelEl || !toolPanelBody) return;
+    if (toolPanelBody.hasAttribute('hidden')) return;
+    if (toolPanelEl.contains(e.target)) return;
+    toolPanelBody.setAttribute('hidden', '');
+  });
+  if (toolPanelClear) {
+    toolPanelClear.addEventListener('click', () => {
+      if (toolPanelList) toolPanelList.innerHTML = '';
+      toolPanelCount = 0;
+      if (toolPanelBadge) toolPanelBadge.textContent = '0';
+    });
+  }
+
+  function _toolStatusFromContent(txt) {
     let parsed = null;
     try { parsed = JSON.parse(txt); } catch (e) {}
-    let status = '成功', statusClass = 'tool-status-ok';
     if (parsed && typeof parsed === 'object') {
-      if (parsed.ok === false || parsed.success === false || parsed.error) {
-        status = '失败'; statusClass = 'tool-status-fail';
-      } else if (parsed.ok === true || parsed.success === true) {
-        status = '成功';
-      }
+      if (parsed.ok === false || parsed.success === false || parsed.error) return '失败';
+      if (parsed.ok === true || parsed.success === true) return '成功';
     } else if (/^(error|err|fail|failed|exception)/i.test(txt.trim())) {
-      status = '失败'; statusClass = 'tool-status-fail';
+      return '失败';
     }
-    const div = document.createElement('div');
-    div.className = 'msg msg-tool-result';
-    div.innerHTML = `
-      <div class="msg-label">↳ 结果:<span class="tool-status ${statusClass}"> ${status}</span></div>`;
-    return div;
+    return '成功';
+  }
+
+  function appendToolCallRaw(tc) {
+    // 不再插入到对话流,而是插入到顶栏工具面板
+    if (!toolPanelList) return document.createElement('div');  // 占位返回
+    toolPanelCount++;
+    if (toolPanelBadge) toolPanelBadge.textContent = String(toolPanelCount);
+    const item = document.createElement('div');
+    item.className = 'tool-panel-item';
+    const name = (tc.function && tc.function.name) || 'tool';
+    const args = (tc.function && tc.function.arguments) || '';
+    let argsPreview = '';
+    try {
+      const a = JSON.parse(args);
+      argsPreview = JSON.stringify(a).slice(0, 60);
+    } catch (e) { argsPreview = String(args).slice(0, 60); }
+    item.innerHTML = `<span class="tool-name">🔧 ${escapeHtml(name)}</span>` +
+                     (argsPreview ? `<span style="opacity:.7;">${escapeHtml(argsPreview)}${argsPreview.length >= 60 ? '…' : ''}</span>` : '') +
+                     `<span style="margin-left:auto;color:var(--text-muted);">…</span>`;
+    toolPanelList.appendChild(item);
+    toolPanelList.scrollTop = toolPanelList.scrollHeight;
+    return document.createElement('div');  // 占位,不让它被插到对话
+  }
+  function appendToolResultRaw(m) {
+    // 更新对应工具项的状态(根据 content 判断成功/失败)
+    if (!toolPanelList) return document.createElement('div');
+    const txt = (m.content || '').toString();
+    const status = _toolStatusFromContent(txt);
+    const statusClass = status === '成功' ? 'tool-status-ok' : 'tool-status-fail';
+    // 更新最后一项(刚加的调用)
+    const items = toolPanelList.querySelectorAll('.tool-panel-item');
+    const last = items[items.length - 1];
+    if (last) {
+      // 把末尾 "…" 替换成状态徽章
+      const pendingSpan = last.querySelector('span:last-child');
+      if (pendingSpan) pendingSpan.outerHTML = `<span class="tool-status ${statusClass}">${status}</span>`;
+    }
+    return document.createElement('div');  // 占位
   }
 
   // 从最后一条 user 之后开始,重新渲染(包含 tool_calls/tool/assistant)
@@ -2637,6 +2704,12 @@
   if (sendBtn) {
     sendBtn.addEventListener('click', e => {
       e.preventDefault();
+      // 运行时点击 = 停止
+      if (sending && streamAbort) {
+        streamAbort.abort();
+        appendStatus('已停止');
+        return;
+      }
       sendMessage();
     });
   }
