@@ -109,17 +109,19 @@ def revert(path: str) -> dict:
     d = _DIFFS[path]
     old, op = d["old"], d["op"]
     try:
-        if old is None:
-            # agent 新建的文件 → 删除
-            if os.path.exists(path):
-                os.remove(path)
-        else:
-            # agent 编辑/删除的文件 → 写回旧内容(确保目录存在)
-            dpath = os.path.dirname(path)
-            if dpath and not os.path.exists(dpath):
-                os.makedirs(dpath, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as fp:
-                fp.write(old)
+        from explorer.file import locked
+        with locked(path):
+            if old is None:
+                # agent 新建的文件 → 删除
+                if os.path.exists(path):
+                    os.remove(path)
+            else:
+                # agent 编辑/删除的文件 → 写回旧内容(确保目录存在)
+                dpath = os.path.dirname(path)
+                if dpath and not os.path.exists(dpath):
+                    os.makedirs(dpath, exist_ok=True)
+                with open(path, "w", encoding="utf-8") as fp:
+                    fp.write(old)
     except Exception as e:
         return {"ok": False, "error": str(e)}
     # 恢复成功,从 diff 池移除
@@ -173,12 +175,23 @@ def apply_patch(path: str) -> dict:
     if path not in _PENDING:
         return {"ok": False, "error": "该文件没有待确认的 patch"}
     new = _PENDING[path]["new"]
+    # 校验:文件自 patch 生成以来是否被修改
+    baseline = _PENDING[path].get("baseline_mtime")
     try:
-        dpath = os.path.dirname(path)
-        if dpath and not os.path.exists(dpath):
-            os.makedirs(dpath, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fp:
-            fp.write(new)
+        current_mtime = os.path.getmtime(path)
+    except OSError:
+        current_mtime = None
+    if baseline is not None and current_mtime is not None and current_mtime != baseline:
+        return {"ok": False, "error": "文件已被外部修改,请重新生成 patch"}
+
+    try:
+        from explorer.file import locked
+        with locked(path):
+            dpath = os.path.dirname(path)
+            if dpath and not os.path.exists(dpath):
+                os.makedirs(dpath, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fp:
+                fp.write(new)
     except Exception as e:
         return {"ok": False, "error": str(e)}
     _PENDING.pop(path, None)

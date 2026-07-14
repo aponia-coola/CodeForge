@@ -1,4 +1,68 @@
 import os
+import sys
+import time
+import contextlib
+
+# ════════════════════════════════════════════════════════════
+#              跨平台文件锁(FileLock)
+# ════════════════════════════════════════════════════════════
+# 用 O_EXCL 创建 .lock 旁路文件实现原子加锁。
+# - Windows:O_EXCL 本身就是排他锁,够用
+# - Linux/macOS:O_EXCL 仅防并发创建,还需 fcntl.flock 防并发读写
+class FileLock:
+    def __init__(self, path: str, timeout: float = 5.0, poll: float = 0.05):
+        self.lock_path = path + '.lock'
+        self.timeout = timeout
+        self.poll = poll
+        self._fd = None
+
+    def acquire(self):
+        deadline = time.monotonic() + self.timeout
+        while True:
+            try:
+                self._fd = os.open(
+                    self.lock_path,
+                    os.O_CREAT | os.O_EXCL | os.O_RDWR,
+                    0o644,
+                )
+                break
+            except FileExistsError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f'获取文件锁超时: {self.lock_path}')
+                time.sleep(self.poll)
+        if sys.platform != 'win32':
+            import fcntl
+            try:
+                fcntl.flock(self._fd, fcntl.LOCK_EX)
+            except OSError:
+                os.close(self._fd); self._fd = None
+                raise
+
+    def release(self):
+        if self._fd is None: return
+        try:
+            if sys.platform != 'win32':
+                import fcntl
+                try: fcntl.flock(self._fd, fcntl.LOCK_UN)
+                except OSError: pass
+        finally:
+            os.close(self._fd)
+            self._fd = None
+            try: os.remove(self.lock_path)
+            except OSError: pass
+
+    def __enter__(self): self.acquire(); return self
+    def __exit__(self, *args): self.release()
+
+
+@contextlib.contextmanager
+def locked(path: str, timeout: float = 5.0):
+    """对文件加排他锁的便捷上下文管理器。"""
+    lock = FileLock(path, timeout=timeout)
+    lock.acquire()
+    try: yield
+    finally: lock.release()
+
 
 def list(path):
     return os.listdir(path)
@@ -6,19 +70,19 @@ def list(path):
 
 def read_raw(path):
     """读取文件原文(不含行号),用于 patch 搜索替换的基线。"""
-    with open(path, 'r', encoding='utf-8') as f:
+    with locked(path), open(path, 'r', encoding='utf-8') as f:
         return f.read()
 
 
 def create(file_path):
-    with open(file_path, 'w', encoding='utf-8') as file:
+    with locked(file_path), open(file_path, 'w', encoding='utf-8') as file:
         file.write("")
 def read(path, start_line=None):
 
     base_dir = os.path.dirname(os.path.abspath(__file__))
     full_path = path if os.path.isabs(path) else os.path.join(base_dir, path)
 
-    with open(full_path, 'r', encoding='utf-8') as file:
+    with locked(full_path), open(full_path, 'r', encoding='utf-8') as file:
         lines = file.readlines()
 
     s = 0 if start_line is None else max(0, start_line - 1)
@@ -47,14 +111,15 @@ def change(file_path, content, mode='edit', position=None, end_line=None, chunk_
             raise ValueError("edit 模式需要指定 position(行号)")
         if end_line is None:
             end_line = position + 1
-        with open(file_path, 'r', encoding='utf-8') as file:
-            lines = file.readlines()
-        segment = content if content.endswith('\n') else content + '\n'
-        lines[position:end_line] = [segment]
-        with open(file_path, 'w', encoding='utf-8') as file:
-            file.writelines(lines)
+        with locked(file_path):
+            with open(file_path, 'r', encoding='utf-8') as file:
+                lines = file.readlines()
+            segment = content if content.endswith('\n') else content + '\n'
+            lines[position:end_line] = [segment]
+            with open(file_path, 'w', encoding='utf-8') as file:
+                file.writelines(lines)
     elif mode == 'append':
-        with open(file_path, 'a', encoding='utf-8') as file:
+        with locked(file_path), open(file_path, 'a', encoding='utf-8') as file:
             for i in range(0, len(content), chunk_size):
                 file.write(content[i:i + chunk_size])
     else:
@@ -67,11 +132,12 @@ def remove_file(file_path):
     内部复用 os.remove,做绝对路径化和存在性校验。
     """
     abs_path = os.path.abspath(file_path)
-    if not os.path.exists(abs_path):
-        raise FileNotFoundError(f"文件不存在: {abs_path}")
-    if not os.path.isfile(abs_path):
-        raise NotADirectoryError(f"不是文件: {abs_path}")
-    os.remove(abs_path)
+    with locked(abs_path):
+        if not os.path.exists(abs_path):
+            raise FileNotFoundError(f"文件不存在: {abs_path}")
+        if not os.path.isfile(abs_path):
+            raise NotADirectoryError(f"不是文件: {abs_path}")
+        os.remove(abs_path)
 
 
 def list_dir(path, show_hidden=True):
@@ -93,7 +159,11 @@ def list_dir(path, show_hidden=True):
                 size = os.path.getsize(full)
             except OSError:
                 size = 0
-            files.append({"name": name, "path": full, "size": size})
+            try:
+                mtime = os.path.getmtime(full)
+            except OSError:
+                mtime = 0
+            files.append({"name": name, "path": full, "size": size, "mtime": mtime})
 
     folders.sort(key=lambda x: x["name"].lower())
     files.sort(key=lambda x: x["name"].lower())

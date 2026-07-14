@@ -46,7 +46,19 @@
     </div>
   </div>
   <div class="topbar-title">CodeForge</div>
-  <div class="theme-switch" id="theme-switch">
+  <div class="topbar-toggles" id="topbar-toggles">
+      <label class="toggle" title="计划模式:开启后,文件操作前必须先 plan">
+        <input type="checkbox" id="toggle-plan" checked>
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        <span class="toggle-label">Plan</span>
+      </label>
+      <label class="toggle" title="工具执行:关闭后,所有文件操作(create/edit/remove)需要手动确认">
+        <input type="checkbox" id="toggle-auto" checked>
+        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+        <span class="toggle-label">Tool</span>
+      </label>
+    </div>
+    <div class="theme-switch" id="theme-switch">
     <button class="theme-btn" data-theme="dark"  title="黑夜模式">🌙</button>
     <button class="theme-btn" data-theme="light" title="白天模式">☀️</button>
     <button class="theme-btn" data-theme="blue"  title="深蓝模式">🌊</button>
@@ -206,16 +218,6 @@
         <div class="ai-title">Agent</div>
         <div class="ai-actions">
           <div class="model-select">DeepSeek V4 Flash</div>
-          <label class="toggle" title="计划模式:开启后,文件操作前必须先 plan">
-            <input type="checkbox" id="toggle-plan" checked>
-            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-            <span class="toggle-label">Plan</span>
-          </label>
-          <label class="toggle" title="工具执行:关闭后,所有文件操作(create/edit/remove)需要手动确认">
-            <input type="checkbox" id="toggle-auto" checked>
-            <span class="toggle-track"><span class="toggle-thumb"></span></span>
-            <span class="toggle-label">Tool</span>
-          </label>
           <span class="icon-btn pending-badge hidden" id="pending-badge" title="有待确认操作">
             <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor">
               <circle cx="8" cy="8" r="3"/>
@@ -232,6 +234,12 @@
             </svg>
           </span>
         </div>
+      </div>
+
+      <!-- 顶部进度条(运行时显示,左右滑动表示正在运行) -->
+      <div class="ai-progress" id="ai-progress" hidden>
+        <div class="ai-progress-bar"><div class="ai-progress-indicator"></div></div>
+        <span class="ai-progress-text" id="ai-progress-text">思考中…</span>
       </div>
 
       <div class="ai-messages" id="ai-messages">

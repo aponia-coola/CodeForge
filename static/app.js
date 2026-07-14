@@ -383,7 +383,8 @@
     if (!tree) return '';
     const parts = [];
     for (const f of tree.folders) parts.push('D:' + f.name);
-    for (const f of tree.files)   parts.push('F:' + f.name + ':' + (f.size || 0));
+    // mtime 让外部工具修改(大小不变)也能触发刷新
+    for (const f of tree.files)   parts.push('F:' + f.name + ':' + (f.size || 0) + ':' + (f.mtime || 0));
     parts.sort();
     return parts.join('|');
   }
@@ -743,11 +744,11 @@
     if (!diffTabsEl) return;
     diffTabsEl.innerHTML = '';
     const hasFiles = diffFiles.length > 0;
-    // 切显示:有改动 → 显示 diff viewer;没有 → 显示主页
-    if (hasFiles) {
-      showCenter('diff');
-    } else {
-      showCenter('welcome');
+    // 只在用户没在编辑器里看文件时才切视图,
+    // 否则每次 stream 结束刷新 diff 列表都会把编辑器切走。
+    if (!currentEditor || !currentEditor.cm) {
+      if (hasFiles) showCenter('diff');
+      else            showCenter('welcome');
     }
     for (const f of diffFiles) {
       const tab = document.createElement('div');
@@ -1718,6 +1719,10 @@
               agentBaseline = null;
               clearAgentDiff();
               footer.style.display = 'none';
+              // 写盘后,把"已保存"的全文 + 大小同步到编辑器状态
+              saved = cm.getValue();
+              dirty = false;
+              flashSaved();
               appendStatus('已保留 AI 改动(patch 已写入)');
               // 刷新 diff 列表
               setDiffFiles(d.files || []);
@@ -1790,7 +1795,8 @@
       status.textContent = '✓ 已保存';
       setTimeout(() => {
         status.classList.remove('editor-saved');
-        status.textContent = `${formatSize(file.size)} · ${file.content.split('\n').length} 行`;
+        // 用 saved(已写入磁盘的)而不是 file.content(初次打开时的旧值)
+        status.textContent = `${formatSize(file.size)} · ${saved.split('\n').length} 行`;
       }, 1500);
     }
 
@@ -2158,21 +2164,23 @@
     scrollToBottom();
   }
 
+  // 顶部进度条元素(替代原 ai-messages 里的 loading 气泡)
+  const aiProgress      = document.getElementById('ai-progress');
+  const aiProgressText  = document.getElementById('ai-progress-text');
+
   function appendLoading() {
-    if (!aiMessages) return null;
-    const div = document.createElement('div');
-    div.className = 'msg msg-assistant msg-loading';
-    div.innerHTML = `
-      <div class="msg-label">Assistant</div>
-      <div class="msg-bubble">
-        <span class="spinner"></span>
-        <span class="msg-loading-status">思考中…</span>
-      </div>`;
-    aiMessages.appendChild(div);
-    scrollToBottom();
-    return div;
+    if (aiProgress) {
+      aiProgress.removeAttribute('hidden');
+      if (aiProgressText) aiProgressText.textContent = '思考中…';
+    }
+    // 返回一个轻量句柄,兼容老代码里的 setLoadingStatus(loadingEl, text)
+    return { _progress: true };
   }
   function setLoadingStatus(loadingEl, text) {
+    if (loadingEl && loadingEl._progress && aiProgressText) {
+      aiProgressText.textContent = text;
+      return;
+    }
     if (!loadingEl) return;
     const el = loadingEl.querySelector('.msg-loading-status');
     if (el) el.textContent = text;
@@ -2365,7 +2373,8 @@
           return;                       // 成功:跳出
         } catch (err) {
           if (!isNetError(err) || attempt >= MAX_NET_RETRY) {
-            if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
+            if (loading && loading._progress && aiProgress) aiProgress.setAttribute('hidden', '');
+            else if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
             setAgentLight('error');
             const label = attempt > 1 ? ` (重试 ${attempt - 1} 次后失败)` : '';
             appendStatus('✗ 请求失败' + label + ': ' + err);
@@ -2502,7 +2511,8 @@
         }
       }
 
-      // 3. 拆掉 loading
+      // 3. 拆掉 loading(进度条 + 老气泡都收掉)
+      if (aiProgress) aiProgress.setAttribute('hidden', '');
       if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
 
       if (!finalData) {
@@ -2545,11 +2555,11 @@
       }
   }
 
-  // 把节点插到 loading 之前(便于流式把"调用工具 / 工具结果"逐条插到进度条上方)
+  // 把节点插到 aiMessages 末尾(原版插到 loading 上方,新版 loading 改成顶部进度条,直接 appendChild)
   function insertBeforeLoading(loadingEl, buildNode) {
-    if (!loadingEl || !aiMessages) return;
+    if (!aiMessages) return;
     const node = buildNode();
-    aiMessages.insertBefore(node, loadingEl);
+    if (node && node.nodeType === 1) aiMessages.appendChild(node);
     scrollToBottom();
   }
   // 流式输出:在 loading 上方建一个气泡(返回 {bubble, text} 用于持续 append)
@@ -2576,11 +2586,8 @@
     bubble.appendChild(text);
     div.appendChild(label);
     div.appendChild(bubble);
-    if (loadingEl) {
-      aiMessages.insertBefore(div, loadingEl);
-    } else {
-      aiMessages.appendChild(div);
-    }
+    // loading 已改为顶部进度条,所有流式气泡直接追加到末尾
+    aiMessages.appendChild(div);
     scrollToBottom();
     return { bubble, text };
   }
@@ -2636,7 +2643,7 @@
     toolPanelCount++;
     if (toolPanelBadge) toolPanelBadge.textContent = String(toolPanelCount);
     const item = document.createElement('div');
-    item.className = 'tool-panel-item';
+    item.className = 'tool-panel-item tool-panel-collapsed';
     const name = (tc.function && tc.function.name) || 'tool';
     const args = (tc.function && tc.function.arguments) || '';
     let argsPreview = '';
@@ -2644,9 +2651,35 @@
       const a = JSON.parse(args);
       argsPreview = JSON.stringify(a).slice(0, 60);
     } catch (e) { argsPreview = String(args).slice(0, 60); }
-    item.innerHTML = `<span class="tool-name">🔧 ${escapeHtml(name)}</span>` +
-                     (argsPreview ? `<span style="opacity:.7;">${escapeHtml(argsPreview)}${argsPreview.length >= 60 ? '…' : ''}</span>` : '') +
-                     `<span style="margin-left:auto;color:var(--text-muted);">…</span>`;
+    // 暂存完整 args,点击时展开
+    item.dataset.args = args;
+    item.dataset.name = name;
+    item.dataset.result = '';   // 由 appendToolResultRaw 填充
+    item.innerHTML =
+        `<div class="tool-panel-row">` +
+          `<span class="tool-name">🔧 ${escapeHtml(name)}</span>` +
+          (argsPreview ? `<span class="tool-panel-args-preview">${escapeHtml(argsPreview)}${argsPreview.length >= 60 ? '…' : ''}</span>` : '') +
+          `<span class="tool-panel-status" style="margin-left:auto;color:var(--text-muted);">…</span>` +
+        `</div>` +
+        `<div class="tool-panel-detail" hidden>` +
+          `<div class="tool-panel-detail-section">` +
+            `<div class="tool-panel-detail-label">参数</div>` +
+            `<pre class="tool-panel-detail-body">${escapeHtml(_formatJson(args))}</pre>` +
+          `</div>` +
+          `<div class="tool-panel-detail-section tool-panel-detail-result">` +
+            `<div class="tool-panel-detail-label">结果</div>` +
+            `<pre class="tool-panel-detail-body tool-panel-detail-result-body">(等待返回)</pre>` +
+          `</div>` +
+        `</div>`;
+    // 点击展开/折叠
+    item.addEventListener('click', e => {
+      e.stopPropagation();
+      const detail = item.querySelector('.tool-panel-detail');
+      if (!detail) return;
+      const wasHidden = detail.hasAttribute('hidden');
+      if (wasHidden) detail.removeAttribute('hidden');
+      else detail.setAttribute('hidden', '');
+    });
     toolPanelList.appendChild(item);
     toolPanelList.scrollTop = toolPanelList.scrollHeight;
     return document.createElement('div');  // 占位,不让它被插到对话
@@ -2662,10 +2695,23 @@
     const last = items[items.length - 1];
     if (last) {
       // 把末尾 "…" 替换成状态徽章
-      const pendingSpan = last.querySelector('span:last-child');
-      if (pendingSpan) pendingSpan.outerHTML = `<span class="tool-status ${statusClass}">${status}</span>`;
+      const pendingSpan = last.querySelector('.tool-panel-status');
+      if (pendingSpan) {
+        pendingSpan.classList.remove('tool-panel-status');
+        pendingSpan.classList.add('tool-status', statusClass);
+        pendingSpan.textContent = status;
+      }
+      // 写入结果详情
+      last.dataset.result = txt;
+      const resultPre = last.querySelector('.tool-panel-detail-result-body');
+      if (resultPre) resultPre.textContent = _formatJson(txt);
     }
     return document.createElement('div');  // 占位
+  }
+  function _formatJson(s) {
+    if (s == null) return '';
+    try { return JSON.stringify(JSON.parse(s), null, 2); }
+    catch (e) { return String(s); }
   }
 
   // 从最后一条 user 之后开始,重新渲染(包含 tool_calls/tool/assistant)
