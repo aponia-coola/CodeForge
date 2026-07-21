@@ -1131,7 +1131,8 @@
     wrap.className = 'explorer-list';
     wrap.dataset.path = tree.path;
 
-    if (tree.folders.length === 0 && tree.files.length === 0) {
+    const total = (tree.folders || []).length + (tree.files || []).length;
+    if (total === 0) {
       const empty = document.createElement('div');
       empty.className = 'explorer-list-empty';
       empty.textContent = '空目录';
@@ -1139,11 +1140,28 @@
       return wrap;
     }
 
-    for (const f of tree.folders) {
-      wrap.appendChild(buildFolderRow(f));
-    }
-    for (const f of tree.files) {
-      wrap.appendChild(buildFileRow(f));
+    // 性能优化:用 DocumentFragment 批量构建,避免逐个 appendChild 触发 reflow
+    const frag = document.createDocumentFragment();
+    for (const f of (tree.folders || [])) frag.appendChild(buildFolderRow(f));
+    for (const f of (tree.files   || [])) frag.appendChild(buildFileRow(f));
+
+    // 大量条目时折叠成"显示前 N 项 + 展开更多",减轻 DOM 节点压力
+    const VISIBLE_LIMIT = 200;
+    if (total > VISIBLE_LIMIT) {
+      wrap.appendChild(frag);                       // 先塞全部
+      const items = wrap.querySelectorAll('.folder, .file');
+      const hidden = Array.from(items).slice(VISIBLE_LIMIT);
+      hidden.forEach(el => { el.style.display = 'none'; el.dataset.overflow = '1'; });
+      const more = document.createElement('div');
+      more.className = 'explorer-more';
+      more.textContent = `还有 ${hidden.length} 个未显示,点击展开全部`;
+      more.addEventListener('click', () => {
+        hidden.forEach(el => { el.style.display = ''; delete el.dataset.overflow; });
+        more.remove();
+      });
+      wrap.appendChild(more);
+    } else {
+      wrap.appendChild(frag);
     }
     return wrap;
   }
@@ -2441,7 +2459,7 @@
     let buf = '';
     let finalData = null;
     // 流式输出:思考块 + 正文块
-    let thinkEl  = null, thinkTextEl = null;
+    let thinkEl  = null, thinkTextEl = null, thinkMeta = null;
     let answerEl = null, answerTextEl = null;
     let streamedAnswer = false;
     // 跨事件用的瞬态变量(原本是 sendMessage 的局部变量,函数拆分后归到本函数内)
@@ -2478,8 +2496,10 @@
               const built = makeStreamBubble(loading, 'msg-thinking');
               thinkEl = built.bubble;
               thinkTextEl = built.text;
+              thinkMeta = built.updateThinkingMeta;
             }
             thinkTextEl.textContent += evData.text;
+            if (thinkMeta) thinkMeta(thinkTextEl.textContent.length);
             scrollToBottom();
           } else if (evName === 'content_delta') {
             // 正文:正常样式
@@ -2519,7 +2539,13 @@
               attachCopyButtons(answerEl);
             }
             if (answerEl) answerEl.parentElement?.classList.add('msg-stream-done');
-            if (thinkEl)  thinkEl.parentElement?.classList.add('msg-stream-done');
+            if (thinkEl) {
+              const thinkWrap = thinkEl.parentElement;
+              if (thinkWrap) thinkWrap.classList.add('msg-stream-done');
+              // 流结束:头部 meta 改成"已完成 · N KB",并默认展开
+              if (thinkMeta && thinkTextEl) thinkMeta(thinkTextEl.textContent.length, '');
+              if (thinkWrap) thinkWrap.classList.remove('msg-thinking-collapsed');
+            }
           } else if (evName === 'error') {
             throw new Error(evData.message || '流式错误');
           }
@@ -2585,26 +2611,64 @@
     div.className = `msg ${extraClass || ''}`;
     const label = document.createElement('div');
     label.className = 'msg-label';
-    label.textContent = (extraClass && extraClass.includes('thinking')) ? '💭 思考中' : 'Assistant';
+    const isThinking = extraClass && extraClass.includes('thinking');
+    label.textContent = isThinking ? '💭 思考中' : 'Assistant';
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble';
-    const text = document.createElement('div');
-    // 思考=纯文本;正文=先用 msg-stream-text,改 innerHTML 后用 cursor
-    text.className = useMarkdown ? 'msg-stream-text' : 'msg-stream-text msg-stream-plain';
-    text._raw = '';
-    if (useMarkdown) {
+
+    // Thinking 折叠:头部一行 + 可展开正文(默认折叠,等流结束再展开)
+    let thinkingHeader = null;
+    let body = document.createElement('div');
+    if (isThinking) {
+      div.classList.add('msg-thinking-collapsed', 'msg-thinking-empty');
+      thinkingHeader = document.createElement('div');
+      thinkingHeader.className = 'msg-thinking-header';
+      thinkingHeader.innerHTML =
+        '<span class="msg-thinking-chevron">▼</span>' +
+        '<span>💭 思考过程</span>' +
+        '<span class="msg-thinking-meta"></span>';
+      thinkingHeader.addEventListener('click', () => {
+        div.classList.toggle('msg-thinking-collapsed');
+      });
+      body.className = 'msg-thinking-body';
+    } else {
+      body.className = useMarkdown ? 'msg-stream-text' : 'msg-stream-text msg-stream-plain';
+    }
+    body._raw = '';
+
+    if (useMarkdown && !isThinking) {
       // 正文:附一个流式光标标记;markdown 重渲后会在末尾补上
       const cursor = document.createElement('span');
       cursor.className = 'msg-stream-cursor';
-      text.appendChild(cursor);
+      body.appendChild(cursor);
     }
-    bubble.appendChild(text);
+
+    if (isThinking) {
+      // thinking 内部顺序: header → body
+      bubble.appendChild(thinkingHeader);
+      bubble.appendChild(body);
+    } else {
+      bubble.appendChild(body);
+    }
     div.appendChild(label);
     div.appendChild(bubble);
     // loading 已改为顶部进度条,所有流式气泡直接追加到末尾
     aiMessages.appendChild(div);
     scrollToBottom();
-    return { bubble, text };
+
+    // helper:thinking 时,更新头部 meta 文本(字数 + 当前阶段)
+    const updateThinkingMeta = (len, state) => {
+      if (!thinkingHeader) return;
+      const meta = thinkingHeader.querySelector('.msg-thinking-meta');
+      if (meta) meta.textContent = state || (len > 0 ? `(${formatLen(len)})` : '');
+      if (len > 0) div.classList.remove('msg-thinking-empty');
+    };
+
+    return { bubble, text: body, thinkingHeader, updateThinkingMeta };
+  }
+  function formatLen(n) {
+    if (n < 1024) return n + ' chars';
+    return (n / 1024).toFixed(1) + ' KB';
   }
   // 流式插入用的两个原始构造器,跟 appendToolCall/appendToolResult 等价但不依赖外部状态
   // ── 工具调用面板(顶栏左侧折叠面板) ──

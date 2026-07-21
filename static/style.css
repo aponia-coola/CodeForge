@@ -1396,6 +1396,33 @@ body.resizing, body.resizing * {
 }
 .msg-thinking .msg-stream-cursor { background: var(--c-purple-soft); }
 .msg-stream-done .msg-stream-cursor { display: none; }
+
+/* Thinking 折叠:头部一行 + 可展开/收起正文 */
+.msg-thinking .msg-thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--c-purple-soft);
+  cursor: pointer;
+  user-select: none;
+  background: rgba(139, 92, 246, .08);
+  border-radius: 4px;
+  margin-bottom: 4px;
+}
+.msg-thinking .msg-thinking-header:hover { background: rgba(139, 92, 246, .14); }
+.msg-thinking .msg-thinking-chevron {
+  display: inline-block;
+  font-size: 10px;
+  transition: transform var(--t-fast);
+}
+.msg-thinking.msg-thinking-collapsed .msg-thinking-chevron { transform: rotate(-90deg); }
+.msg-thinking .msg-thinking-body { white-space: pre-wrap; word-break: break-word; }
+.msg-thinking.msg-thinking-collapsed .msg-thinking-body { display: none; }
+.msg-thinking.msg-thinking-collapsed .msg-bubble { padding: 0; background: transparent; border-color: transparent; }
+.msg-thinking.msg-thinking-collapsed .msg-label { display: none; }
+.msg-thinking.msg-thinking-empty .msg-thinking-body { display: none; }
 @keyframes cursor-blink {
   0%, 50% { opacity: 1; }
   51%, 100% { opacity: 0; }
@@ -2000,6 +2027,17 @@ body.resizing, body.resizing * {
   font-size: 11px;
   font-style: italic;
 }
+.explorer-more {
+  padding: 6px 16px;
+  margin: 2px 0;
+  color: var(--c-purple-soft);
+  font-size: 11px;
+  cursor: pointer;
+  user-select: none;
+  background: rgba(139, 92, 246, .06);
+  border-radius: 3px;
+}
+.explorer-more:hover { background: rgba(139, 92, 246, .12); color: var(--text); }
 
 .folder-name {
   overflow: hidden;
