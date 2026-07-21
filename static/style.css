@@ -142,6 +142,7 @@ body {
   align-items: center;
   justify-content: center;
   position: relative;
+  z-index: 50;          /* 顶栏 + 它的 absolute 子元素(工具面板等)都在主区之上 */
   border-bottom: 1px solid var(--border-soft);
   box-shadow: var(--shadow-sm);
 }
@@ -238,6 +239,8 @@ body {
   flex-direction: column;
   overflow: hidden;
 }
+/* 兜底:HTML [hidden] 默认 display:none,但 display:flex 会覆盖它 */
+.tool-panel-body[hidden] { display: none !important; }
 .tool-panel-header {
   display: flex;
   align-items: center;
@@ -1580,9 +1583,9 @@ body.resizing, body.resizing * {
   line-height: 1.6;
   overflow-y: auto;
 }
-.terminal.collapsed { height: auto; }
+.terminal.collapsed { height: auto; min-height: 0; }
 .terminal.collapsed .term-body { display: none; }
-.terminal.collapsed .term-tabs { border-bottom: none; }
+.terminal.collapsed .term-tabs { border-bottom: none; padding: 0; height: 0; overflow: hidden; }
 #term-collapse svg { transition: transform var(--t-fast); }
 .terminal.collapsed #term-collapse svg { transform: rotate(180deg); }
 .term-prompt { color: var(--text-dim); }

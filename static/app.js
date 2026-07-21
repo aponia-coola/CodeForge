@@ -702,6 +702,7 @@
     if (!confirm(`保留全部 ${diffFiles.length} 个文件的改动?`)) return;
     const paths = diffFiles.map(f => f.path);
     let ok = 0, fail = 0;
+    const failures = [];
     for (const p of paths) {
       try {
         const r = await fetch('/api/diff/apply', {
@@ -710,10 +711,24 @@
           body: JSON.stringify({path: p}),
         });
         const d = await safeJson(r);
-        if (d.ok) ok++; else fail++;
-      } catch (e) { fail++; }
+        if (d.ok) {
+          ok++;
+          if (d.recovered) appendStatus(`↪ 后端已重启,从备份恢复写入: ${p}`);
+        } else {
+          fail++;
+          failures.push({ path: p, error: d.error || '未知错误' });
+        }
+      } catch (e) {
+        fail++;
+        failures.push({ path: p, error: String(e) });
+      }
     }
     appendStatus(`批量保留完成: ${ok} 成功${fail ? ', ' + fail + ' 失败' : ''}`);
+    // 把失败明细也打出来,方便定位
+    for (const f of failures.slice(0, 5)) {
+      appendStatus(`  ✗ ${f.path}: ${f.error}`);
+    }
+    if (failures.length > 5) appendStatus(`  ...还有 ${failures.length - 5} 条失败未列出`);
     await loadDiffList();
     treeSignature.clear();
     pollPath(currentRoot);
@@ -2600,6 +2615,12 @@
   const toolPanelBadge    = document.getElementById('tool-panel-badge');
   const toolPanelClear    = document.getElementById('tool-panel-clear');
   let toolPanelCount = 0;
+
+  // 兜底:每次刷新页面都强制收起(防止上次的展开态被浏览器缓存)
+  if (toolPanelBody) {
+    toolPanelBody.setAttribute('hidden', '');
+    console.log('[codeforge] tool-panel-body forced hidden');
+  }
 
   if (toolPanelToggle) {
     toolPanelToggle.addEventListener('click', e => {

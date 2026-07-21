@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import contextlib
+import threading
 
 # ════════════════════════════════════════════════════════════
 #              跨平台文件锁(FileLock)
@@ -9,14 +10,30 @@ import contextlib
 # 用 O_EXCL 创建 .lock 旁路文件实现原子加锁。
 # - Windows:O_EXCL 本身就是排他锁,够用
 # - Linux/macOS:O_EXCL 仅防并发创建,还需 fcntl.flock 防并发读写
+#
+# 进程内可重入:同一线程多次锁同一 path 会计数,不真正竞争文件锁。
+# 异常保护:.lock 文件残留超过 30s 视为僵尸,自动清理。
 class FileLock:
-    def __init__(self, path: str, timeout: float = 5.0, poll: float = 0.05):
+    _thread_local = threading.local()  # 线程内持有计数器:{lock_path: count}
+
+    def __init__(self, path: str, timeout: float = 5.0, poll: float = 0.05, stale_sec: float = 30.0):
         self.lock_path = path + '.lock'
         self.timeout = timeout
         self.poll = poll
+        self.stale_sec = stale_sec
         self._fd = None
 
+    def _tls(self):
+        if not hasattr(self._thread_local, 'counter'):
+            self._thread_local.counter = {}
+        return self._thread_local.counter
+
     def acquire(self):
+        # 进程内(线程级)可重入:同一线程已持锁时,只计数不真竞争
+        tls = self._tls()
+        if tls.get(self.lock_path, 0) > 0:
+            tls[self.lock_path] += 1
+            return
         deadline = time.monotonic() + self.timeout
         while True:
             try:
@@ -27,6 +44,15 @@ class FileLock:
                 )
                 break
             except FileExistsError:
+                # 僵尸锁保护:.lock 残留超过 stale_sec 自动清理
+                try:
+                    age = time.time() - os.path.getmtime(self.lock_path)
+                except OSError:
+                    age = 0
+                if age > self.stale_sec:
+                    try: os.remove(self.lock_path)
+                    except OSError: pass
+                    continue   # 立刻重试
                 if time.monotonic() >= deadline:
                     raise TimeoutError(f'获取文件锁超时: {self.lock_path}')
                 time.sleep(self.poll)
@@ -37,8 +63,17 @@ class FileLock:
             except OSError:
                 os.close(self._fd); self._fd = None
                 raise
+        tls[self.lock_path] = 1
 
     def release(self):
+        tls = self._tls()
+        cnt = tls.get(self.lock_path, 0)
+        if cnt > 1:
+            tls[self.lock_path] = cnt - 1
+            return
+        if cnt == 1:
+            tls.pop(self.lock_path, None)
+        # 真释放(只 fd 不为 None 时执行)
         if self._fd is None: return
         try:
             if sys.platform != 'win32':
@@ -48,6 +83,7 @@ class FileLock:
         finally:
             os.close(self._fd)
             self._fd = None
+            # 删 .lock(Windows 上有时 close→remove 延迟,先 close 再删)
             try: os.remove(self.lock_path)
             except OSError: pass
 

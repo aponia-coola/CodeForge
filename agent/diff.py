@@ -173,7 +173,22 @@ def store_patch(path: str, patches: list[dict]) -> dict:
 def apply_patch(path: str) -> dict:
     """用户确认保留 → 把 pending patch 写入磁盘。"""
     if path not in _PENDING:
-        return {"ok": False, "error": "该文件没有待确认的 patch"}
+        # 兜底:进程可能 reload 后 _PENDING 没了,但 _DIFFS 还在。
+        # 用 _DIFFS 里保存的 new 内容直接写入,避免用户重复走生成流程。
+        if path in _DIFFS and _DIFFS[path].get("new") is not None:
+            try:
+                from explorer.file import locked
+                with locked(path):
+                    dpath = os.path.dirname(path)
+                    if dpath and not os.path.exists(dpath):
+                        os.makedirs(dpath, exist_ok=True)
+                    with open(path, "w", encoding="utf-8") as fp:
+                        fp.write(_DIFFS[path]["new"])
+                _DIFFS.pop(path, None)
+                return {"ok": True, "recovered": True}
+            except Exception as e:
+                return {"ok": False, "error": f"_PENDING 丢失,fallback 写盘失败: {e}"}
+        return {"ok": False, "error": "该文件没有待确认的 patch(后端可能已重启,请重新生成)"}
     new = _PENDING[path]["new"]
     # 校验:文件自 patch 生成以来是否被修改
     baseline = _PENDING[path].get("baseline_mtime")
