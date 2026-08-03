@@ -4,6 +4,8 @@ __pycache__/
 .codebuddy/
 .trae/
 .vscode/
+.claude/
+.codex/
 
 # 本地模型覆盖层:真实 key 只放这里,永不进仓库
 models/model.local.json
