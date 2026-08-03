@@ -5,25 +5,24 @@
 <title>CodeForge</title>
 <link rel="stylesheet" href="/static/style.css">
 <link rel="stylesheet" href="/static/animations.css">
-<!-- CodeMirror 5 (核心 + 主题 + 多语言模式) -->
+<!-- CodeMirror 5:只前置加载核心 + htmlmixed 依赖链 + javascript / python
+     其余语言模式由 app.js 的 ensureMode() 在首次打开对应文件类型时按需注入 -->
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/dracula.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/jsx/jsx.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/htmlmixed/htmlmixed.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/css/css.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/markdown/markdown.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/yaml/yaml.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/shell/shell.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/sql/sql.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/clike/clike.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/eclipse.min.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/midnight.min.css">
+<script defer crossorigin="anonymous" referrerpolicy="no-referrer" src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
+<script defer crossorigin="anonymous" referrerpolicy="no-referrer" src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/xml/xml.min.js"></script>
+<script defer crossorigin="anonymous" referrerpolicy="no-referrer" src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/javascript/javascript.min.js"></script>
+<script defer crossorigin="anonymous" referrerpolicy="no-referrer" src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/css/css.min.js"></script>
+<script defer crossorigin="anonymous" referrerpolicy="no-referrer" src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/htmlmixed/htmlmixed.min.js"></script>
+<script defer crossorigin="anonymous" referrerpolicy="no-referrer" src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
 <!-- marked (markdown 渲染) + DOMPurify (XSS 防护) -->
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<script defer crossorigin="anonymous" referrerpolicy="no-referrer" src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<script defer crossorigin="anonymous" referrerpolicy="no-referrer" src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<script defer src="/static/app.js"></script>
 </head>
+<body>
 
 <!-- ===== 顶栏 ===== -->
 <div class="topbar">
@@ -51,11 +50,6 @@
         <input type="checkbox" id="toggle-plan" checked>
         <span class="toggle-track"><span class="toggle-thumb"></span></span>
         <span class="toggle-label">Plan</span>
-      </label>
-      <label class="toggle" title="工具执行:关闭后,所有文件操作(create/edit/remove)需要手动确认">
-        <input type="checkbox" id="toggle-auto" checked>
-        <span class="toggle-track"><span class="toggle-thumb"></span></span>
-        <span class="toggle-label">Tool</span>
       </label>
     </div>
     <div class="theme-switch" id="theme-switch">
@@ -195,6 +189,8 @@
       <div class="center-title">CodeForge</div>
       <div class="center-sub">AI 驱动的网页编码工作台</div>
       <div class="shortcuts">
+        <div class="shortcut-row"><span class="kbd">Ctrl+P</span> 快速打开文件</div>
+        <div class="shortcut-row"><span class="kbd">Ctrl+F</span> 文件内查找</div>
         <div class="shortcut-row"><span class="kbd">Ctrl+J</span> 切换 Agent 栏</div>
         <div class="shortcut-row"><span class="kbd">Ctrl+B</span> 切换资源管理器</div>
       </div>
@@ -234,6 +230,25 @@
             </svg>
           </span>
         </div>
+      </div>
+
+      <!-- 审批模式三态分段控件:决定 Agent 的文件改动要不要经过用户 -->
+      <div class="agent-mode" id="agent-mode">
+        <div class="agent-mode-row">
+          <span class="agent-mode-title">改动审批</span>
+          <div class="agent-mode-seg" role="radiogroup" aria-label="改动审批模式">
+            <button type="button" class="agent-mode-btn" data-mode="auto"
+                    role="radio" aria-checked="false"
+                    title="Agent 直接执行文件改动,不再询问">自动执行</button>
+            <button type="button" class="agent-mode-btn active" data-mode="confirm"
+                    role="radio" aria-checked="true"
+                    title="每一次文件改动都先停下来等你确认">每步确认</button>
+            <button type="button" class="agent-mode-btn" data-mode="readonly"
+                    role="radio" aria-checked="false"
+                    title="只允许读取和分析,不批准任何写操作">只读</button>
+          </div>
+        </div>
+        <div class="agent-mode-hint" id="agent-mode-hint"></div>
       </div>
 
       <!-- 顶部进度条(运行时显示,左右滑动表示正在运行) -->
@@ -322,6 +337,17 @@
       <label class="ssh-optional">私钥路径 (可选,留空用密码)
         <input type="text" id="ssh-key" placeholder="C:\Users\xxx\.ssh\id_rsa" autocomplete="off">
       </label>
+      <!-- 首次连接(TOFU):后端返回 409 时在这里展示主机指纹,由用户判断是否信任 -->
+      <div class="ssh-hostkey" id="ssh-hostkey" hidden>
+        <div class="ssh-hostkey-title">⚠ 无法确认该主机的身份</div>
+        <div class="ssh-hostkey-text">请核对下面的指纹与服务器实际指纹一致后再继续:</div>
+        <div class="ssh-hostkey-fp" id="ssh-hostkey-fp"></div>
+        <div class="ssh-hostkey-known" id="ssh-hostkey-known"></div>
+        <div class="ssh-hostkey-actions">
+          <button type="button" class="modal-btn" id="ssh-hostkey-cancel">取消</button>
+          <button type="button" class="modal-btn primary" id="ssh-hostkey-trust">信任并连接</button>
+        </div>
+      </div>
       <div class="ssh-modal-err" id="ssh-modal-err"></div>
     </div>
     <div class="modal-actions">
@@ -345,6 +371,37 @@
 <!-- 文件树右键菜单(单例,appendChild 到 body) -->
 <div class="ctx-menu hidden" id="file-ctx-menu" role="menu"></div>
 
-<script src="/static/app.js"></script>
+<!-- 快速打开(Ctrl+P):按文件名过滤当前工作目录下的文件 -->
+<div class="modal-mask quickopen-mask" id="quickopen-mask" style="display:none;">
+  <div class="modal-box quickopen-box">
+    <input type="text" class="quickopen-input" id="quickopen-input"
+           placeholder="按文件名搜索… ↑↓ 选择 · Enter 打开 · Esc 关闭"
+           spellcheck="false" autocomplete="off">
+    <div class="quickopen-meta" id="quickopen-meta"></div>
+    <div class="quickopen-list" id="quickopen-list"></div>
+  </div>
+</div>
+
+<!-- 访问令牌:没有 token 或收到 401 时挡在最前面,让用户粘贴 -->
+<div class="modal-mask token-mask" id="token-mask" style="display:none;">
+  <div class="modal-box token-box">
+    <div class="modal-title">需要访问令牌</div>
+    <div class="token-desc">
+      CodeForge 的接口需要令牌才能访问。启动服务时终端会打印一条带
+      <code>#token=…</code> 的地址,直接用那条地址打开即可;
+      也可以把令牌粘贴到下面。
+    </div>
+    <div class="modal-form">
+      <label>访问令牌 (Token)
+        <input type="password" id="token-input" placeholder="粘贴 CODEFORGE_TOKEN"
+               spellcheck="false" autocomplete="off">
+      </label>
+      <div class="token-err" id="token-err"></div>
+    </div>
+    <div class="modal-actions">
+      <button class="modal-btn primary" id="token-submit">保存并继续</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>

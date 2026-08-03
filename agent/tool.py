@@ -1,28 +1,108 @@
 """
-工具注册表。
-- @tool 装饰器:把函数注册成 OpenAI 兼容的工具(JSON Schema)
-- get_tools(plan_model=True) -> list[dict]:  返回给模型的 tools 列表
-- call(name, **kwargs) -> str:               执行一个已注册的工具
-- 状态联动:auto=False 时,文件类工具不执行,写 state.pending
+工具注册表与调度层。
+- @tool 装饰器:把函数注册为 OpenAI 兼容工具(JSON Schema),同时声明审批策略
+- get_tools(plan_model=True) -> list[dict]:返回给模型的 tools 列表
+- dispatch(name, args, ctx) -> ToolResult:唯一的执行入口,审批门在这里统一执行
+- 审批策略集中在注册表里,不再由各个工具函数手抄:
+    mutating=True        需要 auto 或一次性授权才执行,否则写 pending 并返回待确认
+    always_confirm=True  无视 auto,必须拿到针对本次调用的一次性授权(run_command)
+- 所有路径都先过 sandbox.resolve,越界与受保护文件返回明确错误给模型
 """
+import inspect
 import json
 import os
-from typing import Callable
+from dataclasses import dataclass
+from typing import Any, Callable
 
-from agent import state, diff as agent_diff
+import sandbox
+from agent import session as agent_session
 from explorer import file
 
 
-# ──────────────── 注册表 ────────────────
-_REGISTRY: dict[str, dict] = {}   # name -> {"func": Callable, "schema": dict}
+# ──────────────── 读取上限 ────────────────
+MAX_READ_LINES = 2000
+MAX_READ_BYTES = 100 * 1024
+
+# 这些异常是确定性的,重试同样的参数没有意义
+_NO_RETRY_EXC = (
+    PermissionError, FileExistsError, FileNotFoundError, NotADirectoryError,
+    IsADirectoryError, ValueError, TypeError, KeyError,
+)
+
+FILE_TOOLS = frozenset({"create_file", "edit_file", "remove_file"})
 
 
-def tool(name: str, description: str, parameters: dict):
-    """装饰器:把函数注册为 OpenAI 兼容工具(JSON Schema)"""
+# ════════════════════════════════════════════════════════════
+#                      结构化返回 & 上下文
+# ════════════════════════════════════════════════════════════
+
+@dataclass
+class ToolResult:
+    """
+    工具执行结果。
+    ok        是否成功;loop 按这个字段决定重试与事件里的成功标记
+    content   喂给模型的文本(tool 消息的 content)
+    error     失败原因的机器可读标签,成功时为 None
+    retryable 失败是否值得原样重试一次(确定性错误为 False)
+    pending   本次调用触发了待确认时的 pending 记录
+    """
+    ok: bool
+    content: str
+    error: str | None = None
+    retryable: bool = False
+    pending: dict | None = None
+
+
+@dataclass(frozen=True)
+class ToolContext:
+    """一次工具调用的执行上下文,携带会话与本次生效的 auto 值。"""
+    session: Any
+    auto: bool = False
+
+
+def context(sid: str | None = None) -> ToolContext:
+    """按 sid 构造执行上下文,sid 为空落到默认会话。"""
+    s = agent_session.get(sid)
+    with s.lock:
+        return ToolContext(session=s, auto=bool(s.auto))
+
+
+# ════════════════════════════════════════════════════════════
+#                          注册表
+# ════════════════════════════════════════════════════════════
+
+@dataclass
+class ToolSpec:
+    """一个已注册工具的全部元信息,审批策略也在这里声明。"""
+    name: str
+    func: Callable
+    schema: dict
+    mutating: bool = False
+    risk: str = "low"
+    always_confirm: bool = False
+    needs_ctx: bool = False
+    approval_keys: tuple = ()
+
+
+_REGISTRY: dict[str, ToolSpec] = {}
+
+
+def tool(name: str, description: str, parameters: dict, *,
+         mutating: bool = False, risk: str = "low", always_confirm: bool = False,
+         needs_ctx: bool = False, approval_keys: tuple = ()):
+    """
+    装饰器:把函数注册为 OpenAI 兼容工具。
+    mutating       是否会改变外部状态(文件/进程),决定要不要过审批门
+    risk           low / medium / high,只用于展示给用户
+    always_confirm 无视 auto,每次调用都要用户逐条确认
+    needs_ctx      函数第一个参数接收 ToolContext
+    approval_keys  判定「一次性授权是否属于本次调用」时要逐字比对的参数名
+    """
     def decorator(func: Callable) -> Callable:
-        _REGISTRY[name] = {
-            "func":   func,
-            "schema": {
+        _REGISTRY[name] = ToolSpec(
+            name=name,
+            func=func,
+            schema={
                 "type": "function",
                 "function": {
                     "name":        name,
@@ -30,37 +110,214 @@ def tool(name: str, description: str, parameters: dict):
                     "parameters":  parameters,
                 },
             },
-        }
+            mutating=mutating,
+            risk=risk,
+            always_confirm=always_confirm,
+            needs_ctx=needs_ctx,
+            approval_keys=tuple(approval_keys),
+        )
         return func
     return decorator
 
 
-# ──────────────── 工具调用入口 ────────────────
-def call(name: str, **kwargs) -> str:
-    """执行一个已注册的工具,异常转字符串返回(不会抛出)"""
-    if name not in _REGISTRY:
-        return f"错误:未知工具 {name}"
+def get_spec(name: str) -> ToolSpec | None:
+    return _REGISTRY.get(name)
+
+
+def tool_names() -> list[str]:
+    return list(_REGISTRY)
+
+
+# ════════════════════════════════════════════════════════════
+#                          审批门
+# ════════════════════════════════════════════════════════════
+
+def _approval_matches(sess: Any, spec: ToolSpec, args: dict) -> bool:
+    """
+    判断会话上挂着的一次性授权是不是针对本次调用。
+    session.consume_approval 只比对 file_path,这里按工具声明的 approval_keys 再收紧一层,
+    避免「确认了命令 A」被拿去执行命令 B。
+    """
+    a = getattr(sess, "approved", None)
+    if not isinstance(a, dict) or a.get("action") != spec.name:
+        return False
+    want = a.get("args")
+    if not isinstance(want, dict):
+        want = {}
+    for key in spec.approval_keys:
+        if want.get(key) != args.get(key):
+            return False
+    return True
+
+
+def _authorized(spec: ToolSpec, args: dict, ctx: ToolContext) -> bool:
+    """审批门:先看一次性授权,再看 auto;always_confirm 的工具只认一次性授权。"""
+    if _approval_matches(ctx.session, spec, args) and ctx.session.consume_approval(spec.name, args):
+        return True
+    if spec.always_confirm:
+        return False
+    return bool(ctx.auto)
+
+
+def _pending_markdown(spec: ToolSpec, args: dict) -> str:
+    """生成给用户看的确认卡片正文。"""
+    name = spec.name
+    if name == "create_file":
+        body = args.get("content") or ""
+        return f"**创建文件**:`{args.get('file_path', '')}`\n\n初始内容:{len(body)} 字符"
+    if name == "edit_file":
+        patches = args.get("patches")
+        count = len(patches) if isinstance(patches, list) else 0
+        return f"**修改文件**:`{args.get('file_path', '')}`\n\n**改动**:{count} 处替换"
+    if name == "remove_file":
+        return f"**删除文件**:`{args.get('file_path', '')}`"
+    if name == "run_command":
+        cwd = args.get("cwd") or "默认(用户主目录)"
+        return (
+            f"**执行命令**(风险:{spec.risk})\n\n"
+            f"```sh\n{args.get('command', '')}\n```\n"
+            f"工作目录:`{cwd}`\n\n"
+            f"超时:{args.get('timeout', 30)} 秒"
+        )
+    return f"**{name}**\n\n```json\n{json.dumps(args, ensure_ascii=False, indent=2)}\n```"
+
+
+def _build_pending(spec: ToolSpec, args: dict) -> dict:
+    return {
+        "action":   spec.name,
+        "args":     args,
+        "risk":     spec.risk,
+        "markdown": _pending_markdown(spec, args),
+        "message":  "用户确认后 agent 才会执行这一步;授权只对这一次调用生效。",
+    }
+
+
+# ════════════════════════════════════════════════════════════
+#                       工具调用入口
+# ════════════════════════════════════════════════════════════
+
+def dispatch(name: str, args: dict | None = None, ctx: ToolContext | None = None) -> ToolResult:
+    """
+    执行一个已注册工具。审批、参数校验、异常收敛都在这里,任何情况都返回 ToolResult。
+    未获授权时写 pending 并原样返回,不执行工具函数。
+    """
+    spec = _REGISTRY.get(name)
+    if spec is None:
+        return ToolResult(False, f"错误:未知工具 {name}", error="unknown_tool")
+    if args is None:
+        args = {}
+    if not isinstance(args, dict):
+        return ToolResult(False, f"错误:工具 {name} 的参数必须是 JSON 对象", error="bad_arguments")
+    if ctx is None:
+        ctx = context()
+
+    if spec.mutating and not _authorized(spec, args, ctx):
+        pending = _build_pending(spec, args)
+        ctx.session.set_pending(pending)
+        return ToolResult(
+            ok=True,
+            content=json.dumps({"status": "pending_approval", **pending},
+                               ensure_ascii=False, default=str),
+            pending=pending,
+        )
+
+    call_args = (ctx,) if spec.needs_ctx else ()
     try:
-        return str(_REGISTRY[name]["func"](**kwargs))
+        bound = inspect.signature(spec.func).bind(*call_args, **args)
+    except TypeError as e:
+        return ToolResult(False, f"错误:工具 {name} 参数不合法:{e}", error="bad_arguments")
+
+    try:
+        raw = spec.func(*bound.args, **bound.kwargs)
+    except sandbox.SandboxError as e:
+        return ToolResult(False, f"错误:{e}", error="sandbox")
     except Exception as e:
-        return f"工具 {name} 执行失败:{type(e).__name__}: {e}"
+        return ToolResult(
+            False,
+            f"工具 {name} 执行失败:{type(e).__name__}: {e}",
+            error=type(e).__name__,
+            retryable=not isinstance(e, _NO_RETRY_EXC),
+        )
+
+    if isinstance(raw, ToolResult):
+        return raw
+    return ToolResult(True, "" if raw is None else str(raw))
+
+
+def call(name: str, sid: str | None = None, **kwargs) -> ToolResult:
+    """旧调用点的便利封装:用默认会话跑一次 dispatch,返回 ToolResult。"""
+    return dispatch(name, kwargs, context(sid))
 
 
 # ──────────────── 获取当前可用工具列表 ────────────────
-def get_tools(plan_model: bool | None = None) -> list[dict]:
+def get_tools(plan_model: bool | None = None, sid: str | None = None) -> list[dict]:
     """
     返回 OpenAI 格式的 tools 列表。
     plan_model=False 时不返回 plan 工具(模型不知道要 plan)。
     """
     if plan_model is None:
-        plan_model = state.get_plan_model()
+        s = agent_session.get(sid)
+        with s.lock:
+            plan_model = s.plan_model
 
     out = []
-    for name, entry in _REGISTRY.items():
+    for name, spec in _REGISTRY.items():
         if name == "plan" and not plan_model:
             continue
-        out.append(entry["schema"])
+        out.append(spec.schema)
     return out
+
+
+# ════════════════════════════════════════════════════════════
+#                        读取辅助
+# ════════════════════════════════════════════════════════════
+
+def _truncate_numbered(text: str, start: int) -> tuple[str, str]:
+    """
+    按行数 / 字节上限截断带行号的读取结果。
+    返回 (正文, 截断提示);没截断时提示为空串。
+    """
+    lines = text.splitlines(keepends=True)
+    total = start - 1 + len(lines)
+    kept: list[str] = []
+    used = 0
+    for ln in lines:
+        if len(kept) >= MAX_READ_LINES:
+            break
+        used += len(ln.encode("utf-8", "replace"))
+        if used > MAX_READ_BYTES and kept:
+            break
+        kept.append(ln)
+    if len(kept) == len(lines):
+        return text, ""
+    last = start - 1 + len(kept)
+    note = (
+        f"\n… 已截断:本次显示第 {start}–{last} 行,文件共 {total} 行。"
+        f"继续读取请调用 read_file(start_line={last + 1})"
+    )
+    return "".join(kept), note
+
+
+def _pending_patch_notice(store: Any, path: str) -> str:
+    """
+    该文件有未确认 patch 时,给模型一段说明。
+    这里不返回 store.get_preview() 的预览全文:store_patch 每次都拿磁盘内容当基线,
+    模型若照着预览写 old 会匹配不上,且新预览会覆盖上一份未确认的改动。
+    """
+    try:
+        if not store.has_pending(path):
+            return ""
+        d = store.get_diff(path) or {}
+    except Exception:
+        return ""
+    lines = d.get("lines") or []
+    added = sum(1 for ln in lines if ln.get("type") == "add")
+    deleted = sum(1 for ln in lines if ln.get("type") == "del")
+    return (
+        f"[注意] 该文件有一份尚未确认的 patch(+{added} / -{deleted} 行),还没有写入磁盘。"
+        f"下面显示的是磁盘上的当前内容,再次 edit_file 时 old 必须以磁盘内容为准;"
+        f"同一文件再次 edit_file 会基于磁盘重新生成预览,覆盖这份未确认的改动。\n\n"
+    )
 
 
 # ════════════════════════════════════════════════════════════
@@ -85,28 +342,34 @@ def get_tools(plan_model: bool | None = None) -> list[dict]:
         },
         "required": ["intent", "direction", "basis", "affected_files", "steps", "risk"],
     },
+    needs_ctx=True,
 )
-def _plan_tool(intent: str, direction: str, basis: str, affected_files: list, steps: list, risk: str) -> str:
+def _plan_tool(ctx: ToolContext, intent: str, direction: str, basis: str,
+               affected_files: list, steps: list, risk: str) -> ToolResult:
+    files = [str(f) for f in (affected_files or [])]
+    items = [str(s) for s in (steps or [])]
     plan = {
         "intent": intent, "direction": direction, "basis": basis,
-        "affected_files": affected_files, "steps": steps, "risk": risk,
+        "affected_files": files, "steps": items, "risk": risk,
     }
     md = (
         f"## 📋 方案确认\n\n"
         f"**目标**: {intent}\n\n"
         f"**方向**: {direction}\n\n"
         f"**依据**: {basis}\n\n"
-        f"**涉及文件**:\n" + "\n".join(f"- `{f}`" for f in affected_files) + "\n\n"
-        f"**步骤**:\n" + "\n".join(f"{i+1}. {s}" for i, s in enumerate(steps)) + "\n\n"
+        f"**涉及文件**:\n" + "\n".join(f"- `{f}`" for f in files) + "\n\n"
+        f"**步骤**:\n" + "\n".join(f"{i + 1}. {s}" for i, s in enumerate(items)) + "\n\n"
         f"**风险**: {risk}\n"
     )
-    state.set_pending({
+    pending = {
         "action":   "plan",
         "args":     plan,
+        "risk":     risk,
         "markdown": md,
         "message":  "用户在 chat 中确认后,agent 才会继续。",
-    })
-    return md
+    }
+    ctx.session.set_pending(pending)
+    return ToolResult(ok=True, content=md, pending=pending)
 
 
 @tool(
@@ -122,13 +385,17 @@ def _plan_tool(intent: str, direction: str, basis: str, affected_files: list, st
     },
 )
 def _list_dir_tool(path: str, show_hidden: bool = False) -> str:
-    result = file.list_dir(path, show_hidden=show_hidden)
+    full = sandbox.resolve(path)
+    result = file.list_dir(full, show_hidden=show_hidden)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 @tool(
     name="read_file",
-    description="按行号读取文件内容(行号从 1 开始)。start_line 缺省则从第 1 行读到末尾。",
+    description=(
+        "按行号读取文件内容(行号从 1 开始)。start_line 缺省则从第 1 行读到末尾。"
+        f"单次最多返回 {MAX_READ_LINES} 行 / {MAX_READ_BYTES // 1024} KB,超出会截断并提示如何续读。"
+    ),
     parameters={
         "type": "object",
         "properties": {
@@ -137,22 +404,13 @@ def _list_dir_tool(path: str, show_hidden: bool = False) -> str:
         },
         "required": ["path"],
     },
+    needs_ctx=True,
 )
-def _read_file_tool(path: str, start_line: int | None = None) -> str:
-    # 如果有 pending patch 未确认,返回预览内容(让模型看到 patch 后的效果)
-    if agent_diff.has_pending(path):
-        import explorer.file as _ef
-        raw = agent_diff._PENDING.get(path, {}).get("new") or _ef.read_raw(path)
-    else:
-        raw = file.read(path, start_line=start_line)
-        return raw
-    # pending 状态:返回带行号的预览
-    lines = raw.splitlines(keepends=True)
-    s = 0 if start_line is None else max(0, start_line - 1)
-    selected = lines[s:]
-    total = s + len(selected)
-    width = len(str(total)) if total > 0 else 1
-    return ''.join(f"{s + i + 1:>{width}} | {line}" for i, line in enumerate(selected))
+def _read_file_tool(ctx: ToolContext, path: str, start_line: int | None = None) -> str:
+    full = sandbox.resolve(path)
+    start = 1 if start_line is None else max(1, int(start_line))
+    body, note = _truncate_numbered(file.read(full, start_line=start), start)
+    return _pending_patch_notice(ctx.session.diffs, full) + body + note
 
 
 @tool(
@@ -169,24 +427,25 @@ def _read_file_tool(path: str, start_line: int | None = None) -> str:
         },
         "required": ["file_path"],
     },
+    mutating=True,
+    risk="medium",
+    needs_ctx=True,
+    approval_keys=("file_path",),
 )
-def _create_file(file_path: str, content: str = "") -> str:
-    if not state.get_auto():
-        pending = {
-            "action":   "create_file",
-            "args":     {"file_path": file_path, "content": content},
-            "markdown": f"**创建文件**:`{file_path}`",
-        }
-        state.set_pending(pending)
-        return json.dumps({"status": "pending_approval", **pending}, ensure_ascii=False)
-    if os.path.exists(file_path):
-        raise FileExistsError(f"文件已存在,禁止覆盖: {file_path}。如需修改请用 edit_file")
-    agent_diff.snapshot_before(file_path)
-    file.create(file_path)
-    if content:
-        file.change(file_path, content, mode='append')
-    agent_diff.snapshot_after(file_path, "create")
-    return f"已创建 {file_path}({len(content)} chars)"
+def _create_file(ctx: ToolContext, file_path: str, content: str = "") -> ToolResult:
+    full = sandbox.resolve(file_path, write=True, agent=True)
+    if os.path.exists(full):
+        return ToolResult(
+            False,
+            f"文件已存在,禁止覆盖: {full}。如需修改请用 edit_file",
+            error="file_exists",
+        )
+    body = content or ""
+    store = ctx.session.diffs
+    store.snapshot_before(full)
+    file.create(full, body, agent=True)
+    store.snapshot_after(full, "create")
+    return ToolResult(True, f"已创建 {full}({len(body)} chars)")
 
 
 @tool(
@@ -216,22 +475,26 @@ def _create_file(file_path: str, content: str = "") -> str:
         },
         "required": ["file_path", "patches"],
     },
+    mutating=True,
+    risk="medium",
+    needs_ctx=True,
+    approval_keys=("file_path",),
 )
-def _edit_file(file_path: str, patches: list) -> str:
-    if not isinstance(patches, list):
-        return "错误: patches 必须是数组"
-    if not state.get_auto():
-        pending = {
-            "action":   "edit_file",
-            "args":     {"file_path": file_path, "patches": patches},
-            "markdown": f"**修改文件**:`{file_path}`\n\n**改动**: {len(patches)} 处替换",
-        }
-        state.set_pending(pending)
-        return json.dumps({"status": "pending_approval", **pending}, ensure_ascii=False)
-    result = agent_diff.store_patch(file_path, patches)
-    if not result["ok"]:
-        return f"edit_file 失败: {result.get('error', '未知错误')}"
-    return f"已生成 patch 预览({len(patches)} 处改动),等待用户在前端确认保留或撤销"
+def _edit_file(ctx: ToolContext, file_path: str, patches: list) -> ToolResult:
+    if not isinstance(patches, list) or not patches:
+        return ToolResult(False, "错误:patches 必须是非空数组", error="bad_arguments")
+    full = sandbox.resolve(file_path, write=True, agent=True)
+    result = ctx.session.diffs.store_patch(full, patches)
+    if not result.get("ok"):
+        return ToolResult(
+            False,
+            f"edit_file 失败:{result.get('error', '未知错误')}",
+            error="patch_failed",
+        )
+    return ToolResult(
+        True,
+        f"已生成 patch 预览({len(patches)} 处改动),等待用户在前端确认保留或撤销",
+    )
 
 
 @tool(
@@ -244,20 +507,18 @@ def _edit_file(file_path: str, patches: list) -> str:
         },
         "required": ["file_path"],
     },
+    mutating=True,
+    risk="high",
+    needs_ctx=True,
+    approval_keys=("file_path",),
 )
-def _remove_file_tool(file_path: str) -> str:
-    if not state.get_auto():
-        pending = {
-            "action":   "remove_file",
-            "args":     {"file_path": file_path},
-            "markdown": f"**删除文件**:`{file_path}`",
-        }
-        state.set_pending(pending)
-        return json.dumps({"status": "pending_approval", **pending}, ensure_ascii=False)
-    agent_diff.snapshot_before(file_path)
-    file.remove_file(file_path)
-    agent_diff.snapshot_after(file_path, "remove")
-    return f"已删除 {file_path}"
+def _remove_file_tool(ctx: ToolContext, file_path: str) -> ToolResult:
+    full = sandbox.resolve(file_path, write=True, agent=True)
+    store = ctx.session.diffs
+    store.snapshot_before(full)
+    file.remove_file(full, agent=True)
+    store.snapshot_after(full, "remove")
+    return ToolResult(True, f"已删除 {full}")
 
 
 @tool(
@@ -266,6 +527,7 @@ def _remove_file_tool(file_path: str) -> str:
         "在 shell 中执行一条命令并返回 stdout / stderr / returncode。"
         "适用于运行脚本、跑测试、git/pip/node 等命令行工具。"
         "长时间运行的命令请传 timeout(秒)。"
+        "每次调用都需要用户逐条确认,确认后必须用完全相同的参数再调用一次。"
     ),
     parameters={
         "type": "object",
@@ -276,11 +538,14 @@ def _remove_file_tool(file_path: str) -> str:
         },
         "required": ["command"],
     },
+    mutating=True,
+    risk="high",
+    always_confirm=True,
+    approval_keys=("command", "cwd"),
 )
-def _run_command_tool(command: str, cwd: str | None = None, timeout: int = 30) -> str:
+def _run_command_tool(command: str, cwd: str | None = None, timeout: int = 30) -> ToolResult:
     from terminal import run as term_run
     result = term_run(command, cwd=cwd, timeout=timeout)
-    # 标准化返回给模型:命令/cwd/返回码 + stdout + stderr + 错误
     parts = [
         f"command:   {result.get('command', '')}",
         f"cwd:       {result.get('cwd', '')}",
@@ -296,4 +561,9 @@ def _run_command_tool(command: str, cwd: str | None = None, timeout: int = 30) -
         parts.append("error: " + str(result["error"]))
     if result.get("truncated"):
         parts.append("(输出被截断)")
-    return "\n".join(parts)
+    ok = bool(result.get("ok"))
+    return ToolResult(
+        ok=ok,
+        content="\n".join(parts),
+        error=None if ok else (result.get("error") or f"returncode={result.get('returncode')}"),
+    )

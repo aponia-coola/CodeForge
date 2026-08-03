@@ -68,3 +68,18 @@ body { animation: fade-in 0.4s ease-out both; }
 /* ===== 工具类 ===== */
 .fade-in   { animation: fade-in var(--t-med) ease-out both; }
 .slide-in  { animation: slide-in 0.35s cubic-bezier(.4,0,.2,1) both; }
+
+/* 弹层入场(快速打开 / 令牌粘贴框) */
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.97) translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.quickopen-box,
+.token-box { animation: pop-in 0.16s cubic-bezier(.4,0,.2,1) both; }

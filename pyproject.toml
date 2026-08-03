@@ -1,0 +1,41 @@
+# CodeForge 的项目元数据。
+#
+# 这里刻意不写 [build-system]:CodeForge 是直接 `python main.py` 跑起来的应用,
+# 不是要 pip install 的库。加构建后端只会多一层打包配置,而没有任何人会用到它。
+# 依赖同时列在 requirements.txt 里 —— 启动脚本读的是那份,两边要一起改。
+
+[project]
+name            = "codeforge"
+version         = "0.1.0"
+description     = "运行在 Termux / Linux / macOS / Windows 上的轻量级 AI Agent IDE"
+readme          = "README.md"
+requires-python = ">=3.10"
+license         = { file = "LICENSE" }
+keywords        = ["agent", "ide", "llm", "flask", "termux"]
+
+dependencies = [
+    "flask>=2.3,<4",
+    "asgiref>=3.7,<4",
+    "openai>=1.0,<3",
+    "asyncssh>=2.13,<3",
+    "watchdog>=4.0,<7",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+
+# ────────────────────────────────────────────────────────────
+# pytest 配置只留这一份。曾经并存的 pytest.ini 会盖掉本表,已经删掉。
+# live 标记的用例要联网并产生真实的付费调用,默认由 addopts 里的 -m "not live"
+# 排除;需要手动验真实链路时用 -m live 覆盖。
+# ────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-q --strict-markers -m \"not live\""
+markers = [
+    "live: 需要真实网络与付费 LLM 调用的用例,默认不跑,用 -m live 显式启用",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]

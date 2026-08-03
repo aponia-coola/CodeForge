@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "codeforge",
+      "runtimeExecutable": ".venv/Scripts/python.exe",
+      "runtimeArgs": ["main.py", "--host", "127.0.0.1", "--port", "9191"],
+      "port": 9191
+    }
+  ]
+}

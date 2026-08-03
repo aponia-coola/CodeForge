@@ -15,53 +15,177 @@
     }
   }
 
-  // ============ 模型切换下拉 ============
-  const select = document.querySelector('.model-select');
-  if (!select) return;
+  // ════════════════════════════════════════════════════════════
+  //             访问令牌 + 会话标识(所有请求的公共头)
+  // ════════════════════════════════════════════════════════════
+  //   token  来自 location.hash 的 #token=…,读到后写 sessionStorage 并把 hash 清掉,
+  //          免得令牌留在地址栏、被书签或 Referer 带出去。没有令牌时弹粘贴框。
+  //   sid    浏览器侧生成的 UUID,存 localStorage,用来把会话与后端对上。
+  const TOKEN_KEY = 'codeforge:token';
+  const SID_KEY   = 'codeforge:sid';
 
-  // 1. 启动时拉取模型列表,刷新按钮显示
-  // 初始化:把直接文本节点包进 .model-label 里(让省略号只裁文字、不裁下拉)
-  wrapLabel(select);
+  function readStore(store, key) {
+    try { return store.getItem(key) || ''; } catch (e) { return ''; }
+  }
+  function writeStore(store, key, value) {
+    try { store.setItem(key, value); } catch (e) { /* 隐私模式 → 只在内存里留一份 */ }
+  }
 
-  fetch('/api/models')
-    .then(r => r.json())
-    .then(data => {
-      select.dataset.models = JSON.stringify(data.models);
-      const current = data.models.find(m => m.id === data.current);
-      if (current) getLabel(select).textContent = current.name;
-    })
-    .catch(err => {
-      console.error('拉取模型列表失败:', err);
-    });
+  let authToken = readStore(sessionStorage, TOKEN_KEY);
 
-  // 2. 点击切换下拉显示
-  select.addEventListener('click', e => {
-    e.stopPropagation();
-    closeAllDropdowns();
-    if (select.classList.contains('open')) {
-      select.classList.remove('open');
-      return;
+  function takeTokenFromHash() {
+    const hash = location.hash || '';
+    if (!hash || hash.length < 2) return '';
+    const params = new URLSearchParams(hash.slice(1));
+    const t = (params.get('token') || '').trim();
+    if (!t) return '';
+    params.delete('token');
+    const rest = params.toString();
+    // 清掉 hash 里的 token,保留其它片段;replaceState 不产生新的历史记录
+    try {
+      history.replaceState(null, '', location.pathname + location.search + (rest ? '#' + rest : ''));
+    } catch (e) {
+      location.hash = rest;
     }
-    select.classList.add('open');
+    return t;
+  }
 
-    const models = JSON.parse(select.dataset.models || '[]');
-    const current = getLabel(select).textContent;
+  const hashToken = takeTokenFromHash();
+  if (hashToken) {
+    authToken = hashToken;
+    writeStore(sessionStorage, TOKEN_KEY, hashToken);
+  }
 
-    const menu = document.createElement('div');
-    menu.className = 'model-menu';
-    models.forEach(m => {
-      const item = document.createElement('div');
-      item.className = 'model-item';
-      if (m.name === current) item.classList.add('active');
-      item.textContent = m.name;
-      item.addEventListener('click', ev => {
-        ev.stopPropagation();
-        switchModel(m);
-      });
-      menu.appendChild(item);
+  function makeUuid() {
+    if (window.crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+    // 兜底:非安全上下文里 randomUUID 不可用,用 getRandomValues 拼一个 v4
+    const buf = new Uint8Array(16);
+    if (window.crypto && crypto.getRandomValues) crypto.getRandomValues(buf);
+    else for (let i = 0; i < 16; i++) buf[i] = Math.floor(Math.random() * 256);
+    buf[6] = (buf[6] & 0x0f) | 0x40;
+    buf[8] = (buf[8] & 0x3f) | 0x80;
+    const hex = Array.from(buf, b => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
+  }
+
+  let sessionId = readStore(localStorage, SID_KEY);
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(sessionId)) {
+    sessionId = makeUuid();
+    writeStore(localStorage, SID_KEY, sessionId);
+  }
+
+  // ──────── 令牌输入框(Jupyter 式:没令牌就挡在最前面) ────────
+  const tokenMask   = document.getElementById('token-mask');
+  const tokenInput  = document.getElementById('token-input');
+  const tokenErrEl  = document.getElementById('token-err');
+  const tokenSubmit = document.getElementById('token-submit');
+  let tokenPromptOpen = false;
+
+  function showTokenPrompt(message) {
+    if (!tokenMask) return;
+    tokenPromptOpen = true;
+    if (tokenErrEl) tokenErrEl.textContent = message || '';
+    tokenMask.style.display = 'flex';
+    if (tokenInput) {
+      tokenInput.value = '';
+      setTimeout(() => tokenInput.focus(), 0);
+    }
+  }
+  function hideTokenPrompt() {
+    tokenPromptOpen = false;
+    if (tokenMask) tokenMask.style.display = 'none';
+  }
+  function submitToken() {
+    if (!tokenInput) return;
+    const t = tokenInput.value.trim();
+    if (!t) { if (tokenErrEl) tokenErrEl.textContent = '请填写令牌'; return; }
+    authToken = t;
+    writeStore(sessionStorage, TOKEN_KEY, t);
+    hideTokenPrompt();
+    // 令牌换过了,把启动时因 401 失败的几处状态重新拉一遍
+    bootstrapData();
+  }
+  if (tokenSubmit) tokenSubmit.addEventListener('click', submitToken);
+  if (tokenInput) {
+    tokenInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); submitToken(); }
     });
-    select.appendChild(menu);
-  });
+  }
+
+  // ──────── 统一请求封装:注入令牌 + 会话头,401 弹回粘贴框 ────────
+  function api(url, opts) {
+    const o = Object.assign({}, opts || {});
+    const headers = new Headers(o.headers || {});
+    if (authToken) headers.set('X-CodeForge-Token', authToken);
+    headers.set('X-CodeForge-Session', sessionId);
+    o.headers = headers;
+    return fetch(url, o).then(resp => {
+      if (resp.status === 401) {
+        showTokenPrompt(authToken ? '令牌无效或已过期,请重新输入。' : '');
+        const err = new Error('unauthorized');
+        err.name = 'UnauthorizedError';
+        err.status = 401;
+        throw err;
+      }
+      return resp;
+    });
+  }
+  // 401 是"等用户重新给令牌",不是真故障;调用点用它来决定要不要报红
+  function isAuthError(e) { return !!e && e.name === 'UnauthorizedError'; }
+
+  // ============ 模型切换下拉 ============
+  // 这里的下拉只是 header 上的一个显示控件,缺了不该拖垮整个前端初始化,
+  // 所以不再用早期 return 卡住后面所有模块。
+  const select = document.querySelector('.model-select');
+
+  if (select) {
+    // 初始化:把直接文本节点包进 .model-label 里(让省略号只裁文字、不裁下拉)
+    wrapLabel(select);
+
+    // 点击切换下拉显示
+    select.addEventListener('click', e => {
+      e.stopPropagation();
+      closeAllDropdowns();
+      if (select.classList.contains('open')) {
+        select.classList.remove('open');
+        return;
+      }
+      select.classList.add('open');
+
+      const models = JSON.parse(select.dataset.models || '[]');
+      const current = getLabel(select).textContent;
+
+      const menu = document.createElement('div');
+      menu.className = 'model-menu';
+      models.forEach(m => {
+        const item = document.createElement('div');
+        item.className = 'model-item';
+        if (m.name === current) item.classList.add('active');
+        item.textContent = m.name;
+        item.addEventListener('click', ev => {
+          ev.stopPropagation();
+          switchModel(m);
+        });
+        menu.appendChild(item);
+      });
+      select.appendChild(menu);
+    });
+  }
+
+  function loadModels() {
+    if (!select) return Promise.resolve();
+    return api('/api/models')
+      .then(r => r.json())
+      .then(data => {
+        if (!data || !Array.isArray(data.models)) return;
+        select.dataset.models = JSON.stringify(data.models);
+        const current = data.models.find(m => m.id === data.current);
+        if (current) getLabel(select).textContent = current.name;
+      })
+      .catch(err => {
+        if (!isAuthError(err)) console.error('拉取模型列表失败:', err);
+      });
+  }
 
   // 3. 点击外部关闭
   document.addEventListener('click', () => closeAllDropdowns());
@@ -103,6 +227,9 @@
     // 侧边栏手柄
     const handle = document.querySelector('.resize-handle[data-target=".sidebar"]');
     if (handle) handle.style.display = name ? '' : 'none';
+    // 文件树看不见就别轮询了;重新露出来时立刻补一次
+    if (explorerVisible()) startWatcher();
+    else stopWatcher();
   }
 
   const icons = document.querySelectorAll('.sidebar-icons [data-target]');
@@ -210,12 +337,13 @@
   }
 
   function switchModel(model) {
+    if (!select) return;
     // 乐观更新 UI(立即反映)
     getLabel(select).textContent = model.name;
     select.classList.add('switching');
     closeAllDropdowns();
 
-    fetch('/api/model', {
+    api('/api/model', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: model.id }),
@@ -223,25 +351,13 @@
       .then(r => r.json())
       .then(data => {
         select.classList.remove('switching');
-        if (!data.ok) {
-          console.error('切换失败:', data.error);
-          // 回滚显示
-          fetch('/api/models').then(r => r.json()).then(d => {
-            const cur = d.models.find(m => m.id === d.current);
-            if (cur) getLabel(select).textContent = cur.name;
-          });
-          return;
-        }
-        // 成功 → 以服务端为准,重新拉一遍最新状态
-        return fetch('/api/models').then(r => r.json()).then(d => {
-          select.dataset.models = JSON.stringify(d.models);
-          const cur = d.models.find(m => m.id === d.current);
-          if (cur) getLabel(select).textContent = cur.name;
-        });
+        if (!data.ok) console.error('切换失败:', data.error);
+        // 无论成败都以服务端为准,重新拉一遍最新状态
+        return loadModels();
       })
       .catch(err => {
         select.classList.remove('switching');
-        console.error('切换请求失败:', err);
+        if (!isAuthError(err)) console.error('切换请求失败:', err);
       });
   }
 
@@ -266,7 +382,7 @@
   async function ensureRoot() {
     if (currentRoot) return currentRoot;
     // 没开过文件夹 → 用服务端默认路径(home 或 /sdcard)
-    const r = await fetch('/api/folder');
+    const r = await api('/api/folder');
     const d = await r.json();
     if (d.ok) { currentRoot = d.tree.path; return currentRoot; }
     throw new Error(d.error || '无法获取默认路径');
@@ -310,7 +426,7 @@
       confirmBtn.disabled = true;
       try {
         const path = await ensureRoot();
-        const r = await fetch(endpoint, {
+        const r = await api(endpoint, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ path, name, content: '' }),
@@ -372,12 +488,16 @@
   // 当前已打开的根路径(用于 ↑ 返回上级 & 输入框默认值)
   let currentRoot = null;
 
-  // ── 自动刷新:每 ~2.5s 轮询根目录 + 所有已展开子目录 ──
+  // ── 自动刷新:轮询根目录 + 所有已展开子目录 ──
   // 简单 name+size 签名做 diff,变了就替换对应 .explorer-list 的 DOM。
-  const WATCH_INTERVAL_MS = 2500;
+  // 轮询节奏是自适应的:一直没变化就逐级退避,任何一次检测到变化立刻回到最快档;
+  // 标签页切到后台、或者资源管理器根本不可见时,直接停掉,不做无人看的请求。
+  const WATCH_STEPS_MS = [2500, 5000, 15000, 30000];
   const treeSignature = new Map();   // path -> "D:foo|F:bar.txt:42|..." 字符串签名
   const inflightPoll  = new Map();   // path -> AbortController(同一路径新一轮会中止上一轮)
   let watcherTimer = null;
+  // 当前退避档位,取值是 WATCH_STEPS_MS 的下标
+  let watchStep = 0;
 
   function computeSignature(tree) {
     if (!tree) return '';
@@ -396,7 +516,7 @@
     if (prev) prev.abort();
     const ctrl = new AbortController();
     inflightPoll.set(path, ctrl);
-    return fetch(`/api/folder?path=${encodeURIComponent(path)}&_t=${Date.now()}`, { signal: ctrl.signal })
+    return api(`/api/folder?path=${encodeURIComponent(path)}&_t=${Date.now()}`, { signal: ctrl.signal })
       .then(r => r.json())
       .then(d => {
         if (ctrl.signal.aborted) return false;
@@ -419,22 +539,57 @@
   }
 
   function pollAll() {
-    if (!currentRoot) return;
-    pollPath(currentRoot);
-    for (const p of expandedFolders) pollPath(p);
+    if (!currentRoot) return Promise.resolve(false);
+    const tasks = [pollPath(currentRoot)];
+    for (const p of expandedFolders) tasks.push(pollPath(p));
+    return Promise.all(tasks).then(rs => rs.some(Boolean));
+  }
+
+  // 资源管理器整个看不见(侧边栏折叠 / 切到搜索或 SCM 视图)时没必要轮询
+  function explorerVisible() {
+    if (!explorer) return false;
+    const sb = document.querySelector('.sidebar');
+    if (sb && sb.classList.contains('collapsed')) return false;
+    return explorer.style.display !== 'none';
+  }
+
+  function watcherActive() {
+    return !!currentRoot && !document.hidden && explorerVisible();
+  }
+
+  function scheduleWatch(delay) {
+    if (watcherTimer) { clearTimeout(watcherTimer); watcherTimer = null; }
+    watcherTimer = setTimeout(watchTick, delay);
+  }
+
+  function watchTick() {
+    watcherTimer = null;
+    // 停下来,等 visibilitychange 或视图切换把它唤醒
+    if (!watcherActive()) return;
+    pollAll().then(changed => {
+      // 有变化 → 回到最快档;没变化 → 退一档,最慢 30s
+      watchStep = changed ? 0 : Math.min(watchStep + 1, WATCH_STEPS_MS.length - 1);
+      if (watcherActive()) scheduleWatch(WATCH_STEPS_MS[watchStep]);
+    });
   }
 
   function startWatcher() {
     stopWatcher();
-    if (!currentRoot) return;
-    // 立即跑一次(不等 interval)
-    pollAll();
-    watcherTimer = setInterval(pollAll, WATCH_INTERVAL_MS);
+    if (!watcherActive()) return;
+    watchStep = 0;
+    // 立即跑一次,不等第一个间隔
+    watchTick();
   }
 
   function stopWatcher() {
-    if (watcherTimer) { clearInterval(watcherTimer); watcherTimer = null; }
+    if (watcherTimer) { clearTimeout(watcherTimer); watcherTimer = null; }
   }
+
+  // 切后台立刻停;切回前台立刻补一次并重新回到最快档
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) stopWatcher();
+    else startWatcher();
+  });
 
   // 用新的 tree 替换 DOM 里对应的 .explorer-list 节点
   // 保留原本的 indent 类(展开子层会有),保留 list 节点位置
@@ -460,10 +615,12 @@
       explorerRefresh.classList.add('spinning');
       // 强制清掉所有签名,确保下次 pollPath 一定走 DOM 替换
       treeSignature.clear();
-      const tasks = [pollPath(currentRoot)];
-      for (const p of expandedFolders) tasks.push(pollPath(p));
-      Promise.all(tasks).finally(() => {
+      invalidateQuickIndex();
+      // 手动刷新说明用户正在看,退避档位归零
+      watchStep = 0;
+      pollAll().finally(() => {
         setTimeout(() => explorerRefresh.classList.remove('spinning'), 400);
+        startWatcher();
       });
     });
   }
@@ -505,11 +662,13 @@
     expandedFolders.clear();
     treeSignature.clear();        // 旧签名作废
     const url = path ? `/api/folder?path=${encodeURIComponent(path)}` : '/api/folder';
-    fetch(url)
+    api(url)
       .then(r => r.json().then(data => ({ status: r.status, data })))
       .then(({ status, data }) => {
         if (status === 200 && data.ok) {
           currentRoot = data.tree.path;
+          // 换根了,Ctrl+P 的文件名索引作废
+          invalidateQuickIndex();
           renderTree(data.tree, /* asRoot */ true);
           // 写入根的签名,启动 watcher
           treeSignature.set(currentRoot, computeSignature(data.tree));
@@ -659,7 +818,7 @@
 
   async function loadDiffList() {
     try {
-      const r = await fetch('/api/diffs');
+      const r = await api('/api/diffs');
       const d = await r.json();
       if (d.ok) setDiffFiles(d.files || []);
     } catch (e) { /* 静默 */ }
@@ -705,7 +864,7 @@
     const failures = [];
     for (const p of paths) {
       try {
-        const r = await fetch('/api/diff/apply', {
+        const r = await api('/api/diff/apply', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({path: p}),
@@ -731,28 +890,72 @@
     if (failures.length > 5) appendStatus(`  ...还有 ${failures.length - 5} 条失败未列出`);
     await loadDiffList();
     treeSignature.clear();
-    pollPath(currentRoot);
-    for (const p of expandedFolders) pollPath(p);
+    watchStep = 0;
+    pollAll();
   });
+
+  // ── 撤销的两条路子 ──
+  //   create / remove:改动已经落在磁盘上(新建的文件已存在、删除的文件已消失),
+  //                    必须走 /api/diff/revert 让后端真的把文件系统改回去。
+  //   edit:            改动还只是内存里的 pending patch,/api/diff/discard 丢掉即可。
+  // 同一个文件在不同接口里可能写成 C:\a\b 或 C:/a/b,比较前统一成一种形态;
+  // 带盘符的 Windows 路径大小写不敏感,POSIX 路径保持敏感。
+  function normPath(p) {
+    const s = String(p || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    return /^[A-Za-z]:\//.test(s) ? s.toLowerCase() : s;
+  }
+  function samePath(a, b) { return normPath(a) === normPath(b); }
+
+  function diffOpFor(path) {
+    const f = diffFiles.find(x => samePath(x.path, path));
+    return f ? f.op : 'edit';
+  }
+  function undoEndpointFor(op) {
+    return (op === 'create' || op === 'remove') ? '/api/diff/revert' : '/api/diff/discard';
+  }
+  async function undoOne(path, op) {
+    const r = await api(undoEndpointFor(op), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({path}),
+    });
+    return await safeJson(r);
+  }
 
   if (patchDiscardAllBtn) patchDiscardAllBtn.addEventListener('click', async () => {
     if (!diffFiles.length) return;
-    if (!confirm(`撤销全部 ${diffFiles.length} 个文件的改动?文件不会被修改。`)) return;
-    const paths = diffFiles.map(f => f.path);
+    const items   = diffFiles.map(f => ({ path: f.path, op: f.op }));
+    const created = items.filter(f => f.op === 'create').length;
+    const removed = items.filter(f => f.op === 'remove').length;
+    const edited  = items.length - created - removed;
+    const detail = [
+      edited  ? `${edited} 个文件丢弃未写入的改动` : '',
+      created ? `${created} 个新建的文件会被删除` : '',
+      removed ? `${removed} 个被删除的文件会被恢复` : '',
+    ].filter(Boolean).join(';');
+    if (!confirm(`撤销全部 ${items.length} 个文件的改动?\n${detail}。`)) return;
     let ok = 0, fail = 0;
-    for (const p of paths) {
+    const failures = [];
+    for (const it of items) {
       try {
-        const r = await fetch('/api/diff/discard', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({path: p}),
-        });
-        const d = await safeJson(r);
-        if (d.ok) ok++; else fail++;
-      } catch (e) { fail++; }
+        const d = await undoOne(it.path, it.op);
+        if (d.ok) ok++;
+        else { fail++; failures.push({ path: it.path, error: d.error || '未知错误' }); }
+      } catch (e) {
+        fail++;
+        failures.push({ path: it.path, error: String(e) });
+      }
     }
     appendStatus(`批量撤销完成: ${ok} 成功${fail ? ', ' + fail + ' 失败' : ''}`);
+    for (const f of failures.slice(0, 5)) appendStatus(`  ✗ ${f.path}: ${f.error}`);
+    if (failures.length > 5) appendStatus(`  ...还有 ${failures.length - 5} 条失败未列出`);
     await loadDiffList();
+    // create/remove 走的是真实文件系统操作,文件树要跟着刷新
+    if (created || removed) {
+      treeSignature.clear();
+      watchStep = 0;
+      pollAll();
+    }
   });
 
   function renderDiffTabs() {
@@ -803,14 +1006,52 @@
     setDiffFiles(next);
   }
 
+  // 被删除的文件在 diff 里只能看不能点,给它一个真正能把文件找回来的入口
+  function buildRestoreBar(path) {
+    const bar = document.createElement('div');
+    bar.className = 'diff-restore-bar';
+    const text = document.createElement('span');
+    text.className = 'diff-restore-text';
+    text.textContent = 'AI 删除了这个文件,下面是删除前的内容。';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'diff-restore-btn';
+    btn.textContent = '⟲ 恢复文件';
+    btn.title = '把文件写回磁盘原位置';
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        const d = await undoOne(path, 'remove');
+        if (d.ok) {
+          appendStatus('已恢复文件: ' + path);
+          setDiffFiles(d.files || []);
+          treeSignature.clear();
+          watchStep = 0;
+          pollAll();
+        } else {
+          btn.disabled = false;
+          appendStatus('恢复失败: ' + (d.error || '未知错误'));
+        }
+      } catch (e) {
+        btn.disabled = false;
+        if (!isAuthError(e)) appendStatus('恢复失败: ' + e);
+      }
+    });
+    bar.appendChild(text);
+    bar.appendChild(btn);
+    return bar;
+  }
+
   async function loadDiff(path) {
     if (!diffBodyEl) return;
     diffBodyEl.innerHTML = '';
+    if (diffOpFor(path) === 'remove') diffBodyEl.appendChild(buildRestoreBar(path));
     try {
-      const r = await fetch('/api/diff?path=' + encodeURIComponent(path));
+      const r = await api('/api/diff?path=' + encodeURIComponent(path));
       const d = await r.json();
       if (!d.ok) {
-        diffBodyEl.innerHTML = `<div class="diff-line meta">⚠ ${escapeHtml(d.error || '无 diff')}</div>`;
+        diffBodyEl.insertAdjacentHTML('beforeend',
+          `<div class="diff-line meta">⚠ ${escapeHtml(d.error || '无 diff')}</div>`);
         return;
       }
       for (const ln of d.lines || []) {
@@ -827,10 +1068,12 @@
       }
       // 没行时给个提示
       if (!(d.lines || []).length) {
-        diffBodyEl.innerHTML = `<div class="diff-line meta">(无变化)</div>`;
+        diffBodyEl.insertAdjacentHTML('beforeend', `<div class="diff-line meta">(无变化)</div>`);
       }
     } catch (e) {
-      diffBodyEl.innerHTML = `<div class="diff-line meta">⚠ 加载失败:${escapeHtml(String(e))}</div>`;
+      if (isAuthError(e)) return;
+      diffBodyEl.insertAdjacentHTML('beforeend',
+        `<div class="diff-line meta">⚠ 加载失败:${escapeHtml(String(e))}</div>`);
     }
   }
 
@@ -856,7 +1099,7 @@
     let cwd = currentRoot;
     if (!cwd) {
       try {
-        const r = await fetch('/api/folder');
+        const r = await api('/api/folder');
         const d = await r.json();
         if (d.ok) cwd = d.tree.path;
       } catch (e) { /* 静默 */ }
@@ -866,7 +1109,7 @@
       return;
     }
     try {
-      const r = await fetch('/api/git/status?path=' + encodeURIComponent(cwd));
+      const r = await api('/api/git/status?path=' + encodeURIComponent(cwd));
       const d = await r.json();
       if (!d.ok) {
         renderScmError(d.error || '加载失败');
@@ -950,33 +1193,31 @@
     </div>`;
   }
 
-  async function gitStage(path) {
+  // stage / unstage / discard 现在都返回 {ok, output, error, stderr},失败要说出来
+  async function gitWrite(endpoint, path, label) {
     if (scmBusy) return;
     scmBusy = true;
     try {
-      await fetch('/api/git/stage', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cwd: currentRoot, path }) });
+      const r = await api(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cwd: currentRoot, path }),
+      });
+      const d = await safeJson(r);
+      if (!d.ok) {
+        appendStatus(`✗ ${label}失败: ${d.error || d.stderr || d.output || '未知错误'}`);
+        return;
+      }
       await loadGitStatus();
+    } catch (e) {
+      if (!isAuthError(e)) appendStatus(`✗ ${label}失败: ${e}`);
     } finally { scmBusy = false; }
   }
-  async function gitUnstage(path) {
-    if (scmBusy) return;
-    scmBusy = true;
-    try {
-      await fetch('/api/git/unstage', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cwd: currentRoot, path }) });
-      await loadGitStatus();
-    } finally { scmBusy = false; }
-  }
-  async function gitDiscard(path) {
-    if (!confirm(`放弃 ${path} 的本地改动?`)) return;
-    if (scmBusy) return;
-    scmBusy = true;
-    try {
-      await fetch('/api/git/discard', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ cwd: currentRoot, path }) });
-      await loadGitStatus();
-    } finally { scmBusy = false; }
+  function gitStage(path)   { return gitWrite('/api/git/stage',   path, '暂存'); }
+  function gitUnstage(path) { return gitWrite('/api/git/unstage', path, '取消暂存'); }
+  function gitDiscard(path) {
+    if (!confirm(`放弃 ${path} 的本地改动?\n这会丢掉该文件所有未提交的修改,无法撤回。`)) return;
+    return gitWrite('/api/git/discard', path, '放弃改动');
   }
   async function gitCommit() {
     const msg = (scmMsgEl?.value || '').trim();
@@ -985,7 +1226,7 @@
     scmBusy = true;
     scmCommitBtn.disabled = true;
     try {
-      const r = await fetch('/api/git/commit', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const r = await api('/api/git/commit', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cwd: currentRoot, message: msg }) });
       const d = await r.json();
       if (d.ok) {
@@ -1007,7 +1248,7 @@
     scmBusy = true;
     scmPushBtn.disabled = true;
     try {
-      const r = await fetch('/api/git/push', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const r = await api('/api/git/push', { method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ cwd: currentRoot }) });
       const d = await r.json();
       if (d.ok) {
@@ -1030,7 +1271,7 @@
 
   async function showGitDiff(path, staged) {
     try {
-      const r = await fetch('/api/git/diff?path=' + encodeURIComponent(path)
+      const r = await api('/api/git/diff?path=' + encodeURIComponent(path)
         + '&cwd=' + encodeURIComponent(currentRoot || '')
         + (staged ? '&staged=1' : ''));
       const d = await r.json();
@@ -1252,7 +1493,7 @@
       { icon: '✏️', label: '重命名',        action: () => beginInlineRename(filePath) },
       { icon: '⎘', label: '复制文件(同目录生成 _copy)',  action: async () => {
         try {
-          const r = await fetch('/api/file/duplicate', {
+          const r = await api('/api/file/duplicate', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({path: filePath}),
           });
@@ -1261,8 +1502,8 @@
           else { appendStatus('复制失败: ' + (d.error || '未知')); return; }
         } catch (e) { appendStatus('复制失败: ' + e); return; }
         treeSignature.clear();
-        pollPath(currentRoot);
-        for (const p of expandedFolders) pollPath(p);
+        watchStep = 0;
+        pollAll();
       }},
       { icon: '🔗', label: '复制路径到剪贴板', action: async () => {
         try {
@@ -1274,21 +1515,18 @@
       { icon: '🗑', label: '删除', danger: true, action: async () => {
         if (!confirm(`确认删除?\n${filePath}`)) return;
         try {
-          const r = await fetch('/api/file/delete', {
+          const r = await api('/api/file/delete', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({path: filePath}),
           });
           const d = await safeJson(r);
           if (!d.ok) { appendStatus('删除失败: ' + (d.error || '未知')); return; }
           appendStatus('已删除: ' + filePath);
-          // 如果该文件正在编辑器里打开,关掉它
-          if (currentEditor && currentEditor.path === filePath) {
-            currentEditor = null;
-            showCenter('welcome');
-          }
+          // 如果该文件正在编辑器里打开,关掉它(否则编辑器还指着一个不存在的文件)
+          if (currentEditor && samePath(currentEditor.path, filePath)) showCenterEmpty();
           // 从 diff 列表也清掉
           try {
-            const r2 = await fetch('/api/diff/clear', {
+            const r2 = await api('/api/diff/clear', {
               method: 'POST', headers: {'Content-Type': 'application/json'},
               body: JSON.stringify({path: filePath}),
             });
@@ -1296,8 +1534,8 @@
           } catch {}
         } catch (e) { appendStatus('删除失败: ' + e); return; }
         treeSignature.clear();
-        pollPath(currentRoot);
-        for (const p of expandedFolders) pollPath(p);
+        watchStep = 0;
+        pollAll();
       }},
     ];
     for (const it of items) {
@@ -1349,7 +1587,7 @@
       input.replaceWith(newSpan);
       if (!commit || !newName || newName === oldName) return;
       try {
-        const r = await fetch('/api/file/rename', {
+        const r = await api('/api/file/rename', {
           method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({path: filePath, new_name: newName}),
         });
@@ -1363,15 +1601,23 @@
         // 同步行上的 data-path / title
         row.dataset.path = d.path;
         row.title = d.path;
-        // 如果该文件正在编辑器里打开,更新引用
-        if (currentEditor && currentEditor.path === filePath) {
+        // 如果该文件正在编辑器里打开,把编辑器指向新路径(保存/撤销都靠它)
+        if (currentEditor && samePath(currentEditor.path, filePath)) {
           currentEditor.path = d.path;
+          if (currentEditor.file) {
+            currentEditor.file.path = d.path;
+            currentEditor.file.name = newName;
+          }
+          const nameEl = document.querySelector('.editor-header .editor-name');
+          if (nameEl) { nameEl.textContent = newName; nameEl.title = d.path; }
+          const metaEl = document.querySelector('.editor-footer-meta');
+          if (metaEl) metaEl.textContent = d.path;
           const tab = document.querySelector('.editor-tab.active');
           if (tab) tab.dataset.path = d.path;
         }
         treeSignature.clear();
-        pollPath(currentRoot);
-        for (const p of expandedFolders) pollPath(p);
+        watchStep = 0;
+        pollAll();
       } catch (e) {
         appendStatus('重命名失败: ' + e);
         newSpan.textContent = oldName;
@@ -1491,24 +1737,111 @@
   };
   function modeFor(name) { return MODE_MAP[name.split('.').pop().toLowerCase()] || null; }
 
-  function openFileInEditor(filePath) {
+  // ── CodeMirror 语言模式按需加载 ──
+  // index.html 只前置加载核心 + xml/javascript/css/htmlmixed/python,
+  // 其余模式第一次打开对应文件类型时才去 CDN 取,离线时静默降级成纯文本。
+  const CM_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/';
+  const MODE_FILES = {
+    jsx:      ['jsx/jsx.min.js'],
+    markdown: ['markdown/markdown.min.js'],
+    yaml:     ['yaml/yaml.min.js'],
+    shell:    ['shell/shell.min.js'],
+    sql:      ['sql/sql.min.js'],
+    clike:    ['clike/clike.min.js'],
+    php:      ['php/php.min.js'],
+    ruby:     ['ruby/ruby.min.js'],
+    lua:      ['lua/lua.min.js'],
+    rust:     ['rust/rust.min.js'],
+    go:       ['go/go.min.js'],
+    swift:    ['swift/swift.min.js'],
+    toml:     ['toml/toml.min.js'],
+    properties: ['properties/properties.min.js'],
+  };
+  // CodeMirror 的 mode 名 / MIME → 实际要加载哪个模式包
+  function modePackage(mode) {
+    if (!mode) return null;
+    if (mode === 'jsx' || mode === 'text/typescript-jsx') return 'jsx';
+    if (mode === 'markdown') return 'markdown';
+    if (mode === 'yaml') return 'yaml';
+    if (mode === 'shell') return 'shell';
+    if (mode === 'sql') return 'sql';
+    if (/^text\/x-(csrc|c\+\+src|java|csharp|kotlin|scala|objectivec)$/.test(mode)) return 'clike';
+    if (mode === 'application/x-httpd-php') return 'php';
+    if (mode === 'text/x-ruby') return 'ruby';
+    if (mode === 'text/x-lua') return 'lua';
+    if (mode === 'text/x-rust') return 'rust';
+    if (mode === 'text/x-go') return 'go';
+    if (mode === 'text/x-swift') return 'swift';
+    if (mode === 'text/x-toml') return 'toml';
+    if (mode === 'text/x-ini') return 'properties';
+    return null;
+  }
+  // 包名 → Promise<boolean>,同一个模式只注入一次
+  const loadedModes = new Map();
+  function loadScriptOnce(src) {
+    return new Promise(resolve => {
+      const el = document.createElement('script');
+      el.src = src;
+      el.async = false;
+      el.crossOrigin = 'anonymous';
+      el.referrerPolicy = 'no-referrer';
+      el.onload  = () => resolve(true);
+      el.onerror = () => resolve(false);
+      document.head.appendChild(el);
+    });
+  }
+  function ensureMode(mode) {
+    const pkg = modePackage(mode);
+    if (!pkg) return Promise.resolve(true);
+    if (typeof CodeMirror !== 'undefined' && CodeMirror.modes && CodeMirror.modes[pkg]) {
+      return Promise.resolve(true);
+    }
+    if (loadedModes.has(pkg)) return loadedModes.get(pkg);
+    const files = MODE_FILES[pkg] || [];
+    const p = files.reduce(
+      (chain, f) => chain.then(okSoFar => loadScriptOnce(CM_BASE + f).then(ok => okSoFar && ok)),
+      Promise.resolve(true),
+    );
+    loadedModes.set(pkg, p);
+    return p;
+  }
+
+  function openFileInEditor(filePath, gotoLine) {
     if (!center) return;
     showCenter('editor');
     if (editorHost) editorHost.innerHTML = '<div class="editor-loading">加载中...</div>';
-    fetch(`/api/file/read?path=${encodeURIComponent(filePath)}`)
+    api(`/api/file/read?path=${encodeURIComponent(filePath)}`)
       .then(r => r.json().then(data => ({ status: r.status, data })))
       .then(({ status, data }) => {
         if (status === 200 && data.ok) {
-          renderEditor(data);
-        } else {
-          renderCenterError((data && data.error) || `请求失败 (${status})`);
+          renderEditor(data, gotoLine);
+          return;
         }
+        renderCenterError(fileReadErrorText(status, data, filePath));
       })
-      .catch(err => renderCenterError(String(err)));
+      .catch(err => {
+        if (isAuthError(err)) return;
+        renderCenterError(String(err));
+      });
   }
 
-  function renderEditor(file) {
+  // /api/file/read 的失败码各有含义,别一律糊成"请求失败"
+  function fileReadErrorText(status, data, filePath) {
+    const code = data && data.code;
+    if (code === 'too_large') {
+      const size  = data.size  ? formatSize(data.size)  : '未知大小';
+      const limit = data.limit ? formatSize(data.limit) : '上限';
+      return `文件过大,编辑器不打开(${size},上限 ${limit})。\n请用终端或外部编辑器处理:${filePath}`;
+    }
+    if (code === 'not_text') {
+      return `这不是一个文本文件,无法在编辑器里显示。\n${data.error || ''}`;
+    }
+    return (data && data.error) || `请求失败 (${status})`;
+  }
+
+  function renderEditor(file, gotoLine) {
     if (!center || !editorHost) return;
+    destroyEditor();
     showCenter('editor');
     editorHost.innerHTML = '';
 
@@ -1519,7 +1852,7 @@
       tabBar.className = 'editor-tabs';
       for (const f of agentChanged) {
         const tab = document.createElement('div');
-        tab.className = 'editor-tab' + (f.path === file.path ? ' active' : '');
+        tab.className = 'editor-tab' + (samePath(f.path, file.path) ? ' active' : '');
         tab.dataset.path = f.path;
         const tabName = document.createElement('span');
         tabName.className = 'editor-tab-name';
@@ -1535,7 +1868,7 @@
           const next = diffFiles.filter(x => x.path !== f.path);
           setDiffFiles(next);
           // 如果关的是当前文件,切到第一个 tab 或回主页
-          if (f.path === file.path) {
+          if (samePath(f.path, file.path)) {
             if (next.length > 0 && !next[0].path.startsWith('[git]')) {
               openFileInEditor(next[0].path);
             } else {
@@ -1545,7 +1878,7 @@
         });
         tab.appendChild(tabClose);
         tab.addEventListener('click', () => {
-          if (f.path !== file.path) openFileInEditor(f.path);
+          if (!samePath(f.path, file.path)) openFileInEditor(f.path);
         });
         tabBar.appendChild(tab);
       }
@@ -1565,6 +1898,21 @@
     status.className = 'editor-status';
     status.textContent = `${formatSize(file.size)} · ${file.content.split('\n').length} 行`;
     header.appendChild(status);
+
+    // 编码 / 行尾:保存时要原样写回,所以摆在状态栏上让用户看得见
+    const encoding = file.encoding || 'utf-8';
+    const newline  = file.newline  || '\n';
+    const encMeta = document.createElement('span');
+    encMeta.className = 'editor-encoding';
+    encMeta.textContent = `${encoding} · ${newlineLabel(newline)}`;
+    encMeta.title = '读取时探测到的编码与行尾,保存时按原样写回';
+    header.appendChild(encMeta);
+
+    const findBtn = document.createElement('button');
+    findBtn.className = 'editor-find-btn';
+    findBtn.textContent = '查找';
+    findBtn.title = '在文件内查找 (Ctrl+F)';
+    header.appendChild(findBtn);
 
     const saveBtn = document.createElement('button');
     saveBtn.className = 'editor-save-btn';
@@ -1608,11 +1956,23 @@
     footer.appendChild(actions);
     editorHost.appendChild(footer);
 
+    if (typeof CodeMirror === 'undefined') {
+      // CodeMirror 没加载上(离线 / CDN 被挡):退回只读 <pre>,至少内容能看
+      const pre = document.createElement('pre');
+      pre.className = 'editor-plain';
+      pre.textContent = file.content;
+      cmHost.appendChild(pre);
+      editorHost.insertAdjacentHTML('afterbegin',
+        '<div class="editor-error">编辑器组件加载失败,当前为只读预览。</div>');
+      currentEditor = null;
+      return;
+    }
+
     const mode = modeFor(file.name);
     const cm = CodeMirror(cmHost, {
       value: file.content,
       mode: mode,
-      theme: 'dracula',
+      theme: cmThemeFor(activeThemeName()),
       lineNumbers: true,
       indentUnit: 4,
       tabSize: 4,
@@ -1628,8 +1988,16 @@
       extraKeys: {
         'Ctrl-S': () => saveCurrentFile(),
         'Cmd-S':  () => saveCurrentFile(),
+        'Ctrl-F': () => openFindBar(),
+        'Cmd-F':  () => openFindBar(),
       },
     });
+    // 语言模式可能还没加载(首次打开该类型),到货后再挂上去
+    if (mode && modePackage(mode)) {
+      ensureMode(mode).then(ok => {
+        if (ok && currentEditor && currentEditor.cm === cm) cm.setOption('mode', mode);
+      });
+    }
     // 等容器有尺寸再刷新(否则首屏空)
     requestAnimationFrame(() => cm.refresh());
 
@@ -1639,7 +2007,7 @@
 
     // ── agent 改动基线:从后端拉 agent 改动前的原文 ──
     let agentBaseline = null;
-    fetch('/api/diff/baseline?path=' + encodeURIComponent(file.path))
+    api('/api/diff/baseline?path=' + encodeURIComponent(file.path))
       .then(r => safeJson(r))
       .then(d => {
         if (d.ok && typeof d.baseline === 'string') {
@@ -1728,20 +2096,48 @@
       });
     }
 
+    // 每敲一个字符跑一次全文 LCS 会在大文件上直接卡死输入,
+    // 所以只更新脏标记(廉价的字符串比较),高亮延后到用户停手 200ms 之后、
+    // 并且尽量放到浏览器空闲片段里算。
+    const LINE_DIFF_DELAY_MS = 200;
+    let lineDiffTimer = null;
+    let lineDiffIdle  = null;
+    function cancelLineDiffJob() {
+      if (lineDiffTimer) { clearTimeout(lineDiffTimer); lineDiffTimer = null; }
+      if (lineDiffIdle !== null) {
+        if (typeof cancelIdleCallback === 'function') cancelIdleCallback(lineDiffIdle);
+        lineDiffIdle = null;
+      }
+    }
+    function scheduleLineDiff() {
+      cancelLineDiffJob();
+      lineDiffTimer = setTimeout(() => {
+        lineDiffTimer = null;
+        const run = () => { lineDiffIdle = null; applyLineDiff(); };
+        if (typeof requestIdleCallback === 'function') {
+          lineDiffIdle = requestIdleCallback(run, { timeout: 500 });
+        } else {
+          run();
+        }
+      }, LINE_DIFF_DELAY_MS);
+    }
+
     cm.on('change', () => {
       const v = cm.getValue();
       if (v === saved) {
-        if (dirty) { dirty = false; setStatus(saved, dirty, file.size); clearLineDiff(); }
+        if (dirty) { dirty = false; setStatus(saved, dirty, file.size); }
+        cancelLineDiffJob();
+        clearLineDiff();
       } else {
         if (!dirty) { dirty = true; setStatus(saved, dirty, file.size); }
-        applyLineDiff();
+        scheduleLineDiff();
       }
     });
 
     keepBtn.addEventListener('click', () => {
       // 有 pending patch → 调 apply 端点写入磁盘
       if (agentBaseline !== null) {
-        fetch('/api/diff/apply', {
+        api('/api/diff/apply', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({path: file.path}),
@@ -1761,8 +2157,8 @@
               setDiffFiles(d.files || []);
               // 刷新文件树
               treeSignature.clear();
-              pollPath(currentRoot);
-              for (const p of expandedFolders) pollPath(p);
+              watchStep = 0;
+              pollAll();
             } else {
               appendStatus('保留失败: ' + (d.error || '未知错误'));
             }
@@ -1774,32 +2170,42 @@
       if (dirty) save();
     });
     discardBtn.addEventListener('click', () => {
-      // 有 pending patch → 调 discard 端点丢弃(不写磁盘)
+      // 有 agent 改动 → 按 op 分流:新建/删除动了磁盘,必须 revert;编辑只丢 patch
       if (agentBaseline !== null) {
-        if (!confirm('撤销 AI 对此文件的改动?文件不会被修改。')) return;
-        fetch('/api/diff/discard', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({path: file.path}),
-        })
-          .then(r => safeJson(r))
+        const op = diffOpFor(file.path);
+        const prompt = op === 'create'
+          ? '撤销 AI 的新建操作?\n这个文件是 AI 创建的,撤销会把它从磁盘上删除。'
+          : op === 'remove'
+            ? '撤销 AI 的删除操作?\n文件会被写回磁盘原位置。'
+            : '撤销 AI 对此文件的改动?\n改动尚未写入磁盘,文件内容保持原样。';
+        if (!confirm(prompt)) return;
+        undoOne(file.path, op)
           .then(d => {
-            if (d.ok) {
+            if (!d.ok) { appendStatus('撤销失败: ' + (d.error || '未知错误')); return; }
+            agentBaseline = null;
+            clearAgentDiff();
+            cancelLineDiffJob();
+            clearLineDiff();
+            footer.style.display = 'none';
+            setDiffFiles(d.files || []);
+            if (op === 'create') {
+              // 文件已经不存在了,编辑器不能再指着它
+              appendStatus('已撤销 AI 新建(文件已删除): ' + file.path);
+              showCenterEmpty();
+            } else {
               // 恢复编辑器内容到磁盘原文(= saved)
               cm.setValue(saved);
-              agentBaseline = null;
-              clearAgentDiff();
-              clearLineDiff();
               dirty = false;
               setStatus(saved, dirty, file.size);
-              footer.style.display = 'none';
-              appendStatus('已撤销 AI 改动');
-              setDiffFiles(d.files || []);
-            } else {
-              appendStatus('撤销失败: ' + (d.error || '未知错误'));
+              appendStatus(op === 'remove' ? '已恢复被 AI 删除的文件' : '已撤销 AI 改动');
+            }
+            if (op === 'create' || op === 'remove') {
+              treeSignature.clear();
+              watchStep = 0;
+              pollAll();
             }
           })
-          .catch(e => appendStatus('撤销失败: ' + e));
+          .catch(e => { if (!isAuthError(e)) appendStatus('撤销失败: ' + e); });
         return;
       }
       // 没有 pending patch,撤销用户手编辑
@@ -1838,58 +2244,205 @@
       saveBtn.disabled = true;
       status.classList.remove('editor-saved', 'editor-dirty');
       status.textContent = '保存中…';
-      fetch('/api/file/save', {
+      // encoding / newline 原样带回去,否则 GBK 文件会被存成 UTF-8、CRLF 会被压成 LF
+      api('/api/file/save', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: file.path, content: cm.getValue() }),
+        body: JSON.stringify({
+          path:     file.path,
+          content:  cm.getValue(),
+          encoding: encoding,
+          newline:  newline,
+        }),
       })
-        .then(r => r.json().then(data => ({ status: r.status, data })))
-        .then(({ status, data }) => {
-          if (status === 200 && data.ok) {
+        .then(r => r.json().then(data => ({ httpStatus: r.status, data })))
+        .then(({ httpStatus, data }) => {
+          if (httpStatus === 200 && data.ok) {
             saved = cm.getValue();
             dirty = false;
             file.size = data.size;
             flashSaved();
           } else {
-            status.textContent = '✗ 保存失败: ' + ((data && data.error) || status);
+            status.textContent = '✗ 保存失败: ' + ((data && data.error) || httpStatus);
             saveBtn.disabled = false;
           }
         })
         .catch(err => {
+          if (isAuthError(err)) { saveBtn.disabled = false; return; }
           status.textContent = '✗ 保存失败: ' + err;
           saveBtn.disabled = false;
         });
     }
+
+    // ── 文件内查找(Ctrl+F):只用 CodeMirror 核心 API,不引额外的 search addon ──
+    let findBar = null;
+    let findMatches = [];
+    let findIndex = -1;
+    const _findMarks = [];
+    function clearFindMarks() {
+      _findMarks.forEach(m => { try { m.clear(); } catch (e) {} });
+      _findMarks.length = 0;
+    }
+    function runFind(query) {
+      clearFindMarks();
+      findMatches = [];
+      findIndex = -1;
+      const meta = findBar && findBar.querySelector('.editor-find-meta');
+      if (!query) { if (meta) meta.textContent = ''; return; }
+      const hay = cm.getValue().toLowerCase();
+      const needle = query.toLowerCase();
+      let at = hay.indexOf(needle);
+      // 上限保护:匹配太多时只标前 2000 处,避免一次建上万个 mark
+      while (at !== -1 && findMatches.length < 2000) {
+        findMatches.push(at);
+        at = hay.indexOf(needle, at + needle.length);
+      }
+      for (const off of findMatches) {
+        _findMarks.push(cm.markText(
+          cm.posFromIndex(off), cm.posFromIndex(off + query.length),
+          { className: 'cm-find-match' },
+        ));
+      }
+      if (meta) meta.textContent = findMatches.length ? `0/${findMatches.length}` : '无匹配';
+      if (findMatches.length) stepFind(1, query);
+    }
+    function stepFind(dir, query) {
+      if (!findMatches.length) return;
+      findIndex = (findIndex + dir + findMatches.length) % findMatches.length;
+      const off = findMatches[findIndex];
+      const from = cm.posFromIndex(off);
+      const to   = cm.posFromIndex(off + query.length);
+      cm.setSelection(from, to);
+      cm.scrollIntoView({ from, to }, 80);
+      const meta = findBar && findBar.querySelector('.editor-find-meta');
+      if (meta) meta.textContent = `${findIndex + 1}/${findMatches.length}`;
+    }
+    function closeFindBar() {
+      clearFindMarks();
+      findMatches = [];
+      findIndex = -1;
+      if (findBar) { findBar.remove(); findBar = null; }
+      cm.focus();
+    }
+    function openFindBar() {
+      if (findBar) { findBar.querySelector('input').select(); return; }
+      findBar = document.createElement('div');
+      findBar.className = 'editor-find';
+      findBar.innerHTML =
+        '<input type="text" class="editor-find-input" placeholder="查找…" spellcheck="false">' +
+        '<span class="editor-find-meta"></span>' +
+        '<button type="button" class="editor-find-prev" title="上一个 (Shift+Enter)">▲</button>' +
+        '<button type="button" class="editor-find-next" title="下一个 (Enter)">▼</button>' +
+        '<button type="button" class="editor-find-close" title="关闭 (Esc)">×</button>';
+      editorHost.insertBefore(findBar, cmHost);
+      const input = findBar.querySelector('input');
+      const sel = cm.getSelection();
+      if (sel && sel.indexOf('\n') === -1) input.value = sel;
+      input.addEventListener('input', () => runFind(input.value));
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (!findMatches.length) runFind(input.value);
+          else stepFind(e.shiftKey ? -1 : 1, input.value);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          closeFindBar();
+        }
+      });
+      findBar.querySelector('.editor-find-prev')
+        .addEventListener('click', () => stepFind(-1, input.value));
+      findBar.querySelector('.editor-find-next')
+        .addEventListener('click', () => stepFind(1, input.value));
+      findBar.querySelector('.editor-find-close')
+        .addEventListener('click', closeFindBar);
+      input.focus();
+      input.select();
+      if (input.value) runFind(input.value);
+    }
+    findBtn.addEventListener('click', () => openFindBar());
 
     saveBtn.addEventListener('click', save);
     close.addEventListener('click', () => {
       if (dirty && !confirm('有未保存的修改,确定关闭吗?')) return;
       showCenterEmpty();
     });
-    window.addEventListener('beforeunload', e => {
-      if (dirty) { e.preventDefault(); e.returnValue = ''; }
-    });
 
-    currentEditor = { cm, file, save, getDirty: () => dirty };
+    // 搜索结果 / 快速打开传进来的目标行:定位光标 + 滚到视野中间 + 短暂高亮
+    if (gotoLine) jumpToLine(cm, gotoLine);
+
+    currentEditor = {
+      cm,
+      file,
+      path: file.path,
+      save,
+      openFind: openFindBar,
+      getDirty: () => dirty,
+      cleanup: () => {
+        cancelLineDiffJob();
+        clearFindMarks();
+        if (findBar) { findBar.remove(); findBar = null; }
+      },
+    };
   }
 
+  // 跳到指定行(1 基):设光标 + 滚动 + 高亮 2 秒
+  function jumpToLine(cm, line) {
+    const target = Math.max(0, (parseInt(line, 10) || 1) - 1);
+    const last = cm.lastLine();
+    const ln = Math.min(target, last);
+    requestAnimationFrame(() => {
+      cm.setCursor(ln, 0);
+      cm.scrollIntoView({ line: ln, ch: 0 }, 120);
+      const handle = cm.getLineHandle(ln);
+      if (!handle) return;
+      cm.addLineClass(handle, 'background', 'cm-line-jump');
+      setTimeout(() => {
+        try { cm.removeLineClass(handle, 'background', 'cm-line-jump'); } catch (e) {}
+      }, 2000);
+    });
+  }
+
+  // 行尾的人话标签
+  function newlineLabel(nl) {
+    if (nl === '\r\n') return 'CRLF';
+    if (nl === '\r')   return 'CR';
+    return 'LF';
+  }
+
+  // 关掉当前编辑器:清定时器 / 标记 / CodeMirror 实例,断开对文档的引用
+  function destroyEditor() {
+    if (!currentEditor) return;
+    try { if (typeof currentEditor.cleanup === 'function') currentEditor.cleanup(); } catch (e) {}
+    currentEditor = null;
+  }
+
+  // 只注册一次的离开确认:闭包里只留 currentEditor 这一个引用,
+  // 不会像原来那样每打开一个文件就把整份文档钉在监听器里。
+  window.addEventListener('beforeunload', e => {
+    if (currentEditor && currentEditor.getDirty && currentEditor.getDirty()) {
+      e.preventDefault();
+      e.returnValue = '';
+    }
+  });
+
   function saveCurrentFile() {
-    if (currentEditor && !currentEditor.cm.getOption('readOnly')) {
+    if (currentEditor && currentEditor.cm && !currentEditor.cm.getOption('readOnly')) {
       currentEditor.save();
     }
   }
 
   function renderCenterError(msg) {
     if (!center || !editorHost) return;
+    destroyEditor();
     showCenter('editor');
     editorHost.innerHTML = `<div class="editor-error">读取失败: ${escapeHtml(msg)}</div>`;
   }
 
   function showCenterEmpty() {
     if (!center) return;
+    destroyEditor();
     showCenter('welcome');
     if (editorHost) editorHost.innerHTML = '';
-    currentEditor = null;
   }
 
   function formatSize(n) {
@@ -1924,7 +2477,7 @@
       expandedFolders.add(folder.path);
       rowEl.classList.add('expanded');
       rowEl.classList.add('loading');
-      fetch(`/api/folder?path=${encodeURIComponent(folder.path)}`)
+      api(`/api/folder?path=${encodeURIComponent(folder.path)}`)
         .then(r => r.json().then(data => ({ status: r.status, data })))
         .then(({ status, data }) => {
           rowEl.classList.remove('loading');
@@ -2000,7 +2553,8 @@
   const sendBtn     = document.getElementById('send-btn');
   const aiStatus    = document.getElementById('ai-status');
   const togglePlan  = document.getElementById('toggle-plan');
-  const toggleAuto  = document.getElementById('toggle-auto');
+  const agentModeEl   = document.getElementById('agent-mode');
+  const agentModeHint = document.getElementById('agent-mode-hint');
   const chatClear   = document.getElementById('chat-clear');
   const chatRefresh = document.getElementById('chat-refresh');
   const pendingBadge    = document.getElementById('pending-badge');
@@ -2011,10 +2565,12 @@
   let history = [];
   let sending = false;
   let streamAbort = null;   // 当前流式请求的 AbortController,点击"停止"时调用 .abort()
+  // 用户点过"停止":用来把主动中止和真故障区分开
+  let stopRequested = false;
 
   // ──────── 初始化:拉 history + agent state ────────
   function loadChat() {
-    fetch('/api/chat')
+    api('/api/chat')
       .then(r => r.json())
       .then(data => {
         if (!data || !data.ok) return;
@@ -2022,20 +2578,83 @@
         if (data.state) applyAgentState(data.state);
         renderHistory();
       })
-      .catch(err => console.error('拉取 chat 状态失败:', err));
+      .catch(err => { if (!isAuthError(err)) console.error('拉取 chat 状态失败:', err); });
   }
 
   function loadAgentState() {
-    fetch('/api/agent/state')
+    api('/api/agent/state')
       .then(r => r.json())
       .then(data => { if (data && data.ok) applyAgentState(data.state); })
-      .catch(err => console.error('拉取 agent 状态失败:', err));
+      .catch(err => { if (!isAuthError(err)) console.error('拉取 agent 状态失败:', err); });
   }
+
+  // ════════════════════════════════════════════════════════════
+  //                    改动审批模式(三态)
+  // ════════════════════════════════════════════════════════════
+  //   auto      自动执行:后端 auto=true,文件改动不再询问
+  //   confirm   每步确认:后端 auto=false,每次写操作都产生一个 pending 等你点确认
+  //   readonly  只读:后端 auto=false,并且本端拒绝批准任何写操作的 pending
+  //
+  //   注意:只读目前是前端这一侧的闸门 —— 它保证"不会有写操作被这个界面放行",
+  //   但后端还没有 readonly 开关,不会在工具清单里就把写工具藏掉。
+  //   请求里带上 readonly 字段,后端支持之后前端不用再改。
+  const AGENT_MODE_KEY = 'codeforge:agent-mode';
+  const AGENT_MODE_HINTS = {
+    auto:     'Agent 会直接改文件,不再逐条询问。适合你完全信任本次任务时使用。',
+    confirm:  '每一次新建 / 修改 / 删除文件之前都会停下来等你确认。',
+    readonly: '只允许读取与分析。所有写操作的确认请求都会被这个界面拒绝。',
+  };
+  const AGENT_MODES = ['auto', 'confirm', 'readonly'];
+  let agentMode = readStore(localStorage, AGENT_MODE_KEY);
+  if (!AGENT_MODES.includes(agentMode)) agentMode = 'confirm';
+
+  function renderAgentMode() {
+    if (agentModeEl) {
+      agentModeEl.querySelectorAll('.agent-mode-btn').forEach(b => {
+        const on = b.dataset.mode === agentMode;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-checked', on ? 'true' : 'false');
+      });
+      agentModeEl.dataset.mode = agentMode;
+    }
+    if (agentModeHint) agentModeHint.textContent = AGENT_MODE_HINTS[agentMode] || '';
+  }
+
+  function pushAgentMode() {
+    return api('/api/agent/state', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ auto: agentMode === 'auto', readonly: agentMode === 'readonly' }),
+    }).catch(err => { if (!isAuthError(err)) console.error(err); });
+  }
+
+  function setAgentMode(mode, push) {
+    if (!AGENT_MODES.includes(mode)) return;
+    agentMode = mode;
+    writeStore(localStorage, AGENT_MODE_KEY, mode);
+    renderAgentMode();
+    // 模式变了,已经挂在流里的待确认气泡要重新算按钮的可用性
+    if (pendingConfirmNode) applyReadonlyToPending(pendingConfirmNode);
+    if (push !== false) pushAgentMode();
+  }
+
+  if (agentModeEl) {
+    agentModeEl.addEventListener('click', e => {
+      const btn = e.target.closest('.agent-mode-btn');
+      if (!btn) return;
+      setAgentMode(btn.dataset.mode, true);
+    });
+  }
+  renderAgentMode();
 
   function applyAgentState(s) {
     if (!s) return;
     if (typeof s.plan_model === 'boolean' && togglePlan) togglePlan.checked = s.plan_model;
-    if (typeof s.auto === 'boolean' && toggleAuto) toggleAuto.checked = s.auto;
+    if (typeof s.auto === 'boolean') {
+      // 后端只有 auto 一个布尔;auto=false 时到底是"每步确认"还是"只读"由本地记忆决定
+      const next = s.auto ? 'auto' : (agentMode === 'readonly' ? 'readonly' : 'confirm');
+      if (next !== agentMode) setAgentMode(next, false);
+    }
     renderPending(s.pending);
   }
 
@@ -2053,7 +2672,18 @@
         </div>`;
       return;
     }
-    for (const m of history) appendHistoryNode(m);
+    // 工具面板也一并按 history 重建,刷新前后位置一致
+    resetToolPanel();
+    let turn = 0;
+    for (const m of history) {
+      appendHistoryNode(m);
+      if (m && m.role === 'user') {
+        turn++;
+        // 思考过程后端不入库,从本地留档里补回来,位置与流式时一致(在提问之后)
+        const think = getThinking(turn);
+        if (think) appendThinkingBlock(think);
+      }
+    }
     scrollToBottom();
   }
 
@@ -2063,14 +2693,91 @@
       appendMessage('user', m.content || '');
     } else if (m.role === 'assistant') {
       if (m.content) appendMessage('assistant', m.content);
+      // 工具调用统一进顶栏工具面板 —— 与流式运行时同一个去处
       if (Array.isArray(m.tool_calls)) {
-        for (const tc of m.tool_calls) {
-          appendToolCall(tc);
-        }
+        for (const tc of m.tool_calls) appendToolCallRaw(tc);
       }
     } else if (m.role === 'tool') {
-      appendToolResult(m);
+      appendToolResultRaw(m);
     }
+  }
+
+  // ──────── 思考过程本地留档 ────────
+  // 后端的 history 里不含 reasoning,刷新一次就没了。这里按"第几轮提问"存一份,
+  // 重新渲染历史时按同样的位置放回去。只留最近若干轮,避免把 localStorage 撑爆。
+  const THINK_KEY       = 'codeforge:thinking:' + sessionId;
+  // 单轮留档的字符上限,以及最多保留多少轮
+  const THINK_MAX_CHARS = 20000;
+  const THINK_MAX_TURNS = 20;
+
+  function loadThinkStore() {
+    try {
+      const raw = localStorage.getItem(THINK_KEY);
+      const obj = raw ? JSON.parse(raw) : null;
+      return (obj && typeof obj === 'object') ? obj : {};
+    } catch (e) { return {}; }
+  }
+  let thinkStore = loadThinkStore();
+
+  function saveThinkStore() {
+    // 只留最近 THINK_MAX_TURNS 轮
+    const keys = Object.keys(thinkStore).map(Number).filter(n => !isNaN(n)).sort((a, b) => a - b);
+    while (keys.length > THINK_MAX_TURNS) delete thinkStore[String(keys.shift())];
+    writeStore(localStorage, THINK_KEY, JSON.stringify(thinkStore));
+  }
+  function setThinking(turn, text) {
+    if (!turn || !text) return;
+    thinkStore[String(turn)] = text.length > THINK_MAX_CHARS
+      ? text.slice(0, THINK_MAX_CHARS) + '\n…(已截断)'
+      : text;
+    saveThinkStore();
+  }
+  function getThinking(turn) {
+    return thinkStore[String(turn)] || '';
+  }
+  function clearThinkStore() {
+    thinkStore = {};
+    try { localStorage.removeItem(THINK_KEY); } catch (e) {}
+  }
+  function countUserTurns() {
+    return history.filter(m => m && m.role === 'user').length;
+  }
+
+  // 折叠好的思考块(历史还原用,与流式结束后的形态一致)
+  function appendThinkingBlock(text) {
+    if (!aiMessages || !text) return null;
+    const div = document.createElement('div');
+    div.className = 'msg msg-thinking msg-thinking-collapsed msg-stream-done';
+    const label = document.createElement('div');
+    label.className = 'msg-label';
+    label.textContent = '💭 思考中';
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble';
+    const header = document.createElement('div');
+    header.className = 'msg-thinking-header';
+    header.innerHTML =
+      '<span class="msg-thinking-chevron">▼</span>' +
+      '<span>💭 思考过程</span>' +
+      `<span class="msg-thinking-meta">${escapeHtml(thinkingSummary(text))}</span>`;
+    header.addEventListener('click', () => div.classList.toggle('msg-thinking-collapsed'));
+    const body = document.createElement('div');
+    body.className = 'msg-thinking-body';
+    body.textContent = text;
+    bubble.appendChild(header);
+    bubble.appendChild(body);
+    div.appendChild(label);
+    div.appendChild(bubble);
+    aiMessages.appendChild(div);
+    return div;
+  }
+
+  // 折叠时头部那一行摘要:长度 + 第一句,足够判断值不值得展开
+  function thinkingSummary(text) {
+    const t = (text || '').trim();
+    if (!t) return '';
+    const first = t.split(/\n+/).find(s => s.trim()) || '';
+    const brief = first.length > 40 ? first.slice(0, 40) + '…' : first;
+    return `${formatLen(t.length)} · ${brief}`;
   }
 
   function appendMessage(role, text) {
@@ -2159,44 +2866,6 @@
     }
   }
 
-  function appendToolCall(tc) {
-    if (!aiMessages || !tc || !tc.function) return;
-    const div = document.createElement('div');
-    div.className = 'msg msg-tool';
-    const toolName = tc.function.name || 'tool';
-    div.innerHTML = `
-      <div class="msg-label">🔧 调用工具:<span class="tool-name"> ${escapeHtml(toolName)}</span></div>`;
-    aiMessages.appendChild(div);
-    scrollToBottom();
-  }
-
-  function appendToolResult(m) {
-    if (!aiMessages) return;
-    const div = document.createElement('div');
-    div.className = 'msg msg-tool-result';
-    const txt = (m.content || '').toString();
-    // 判定成功/失败:尝试解析 JSON,看 ok / success / error 字段
-    let parsed = null;
-    try { parsed = JSON.parse(txt); } catch (e) { /* 非 JSON */ }
-    let status = '成功';
-    let statusClass = 'tool-status-ok';
-    if (parsed && typeof parsed === 'object') {
-      if (parsed.ok === false || parsed.success === false || parsed.error) {
-        status = '失败';
-        statusClass = 'tool-status-fail';
-      } else if (parsed.ok === true || parsed.success === true) {
-        status = '成功';
-      }
-    } else if (/^(error|err|fail|failed|exception)/i.test(txt.trim())) {
-      status = '失败';
-      statusClass = 'tool-status-fail';
-    }
-    div.innerHTML = `
-      <div class="msg-label">↳ 结果:<span class="tool-status ${statusClass}"> ${status}</span></div>`;
-    aiMessages.appendChild(div);
-    scrollToBottom();
-  }
-
   // 顶部进度条元素(替代原 ai-messages 里的 loading 气泡)
   const aiProgress      = document.getElementById('ai-progress');
   const aiProgressText  = document.getElementById('ai-progress-text');
@@ -2276,15 +2945,14 @@
   // marked.parse → DOMPurify.sanitize 防 XSS
   function formatMarkdownLite(s) {
     if (!s) return '';
-    if (typeof marked === 'undefined') {
-      // 兜底:CDN 加载失败时退回转义 + 换行
+    // marked 或 DOMPurify 任意一个没加载上,都退回纯转义 —— DOMPurify 是唯一的 XSS 防线,
+    // 缺了它就绝不能把 marked 的 HTML 直接塞进 innerHTML。
+    if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
       return escapeHtml(s).replace(/\n/g, '<br>');
     }
     marked.setOptions({ gfm: true, breaks: true });
     const raw = marked.parse(s);
-    return typeof DOMPurify !== 'undefined'
-      ? DOMPurify.sanitize(raw, { ADD_ATTR: ['target', 'rel'] })
-      : raw;
+    return DOMPurify.sanitize(raw, { ADD_ATTR: ['target', 'rel'] });
   }
 
   // ──────── 待确认气泡(对话流内行内确认) ────────
@@ -2337,12 +3005,33 @@
     actions.appendChild(btnOk);
     actions.appendChild(btnNo);
 
+    const note = document.createElement('div');
+    note.className = 'pending-confirm-note';
+    actions.appendChild(note);
+
     bubble.appendChild(body);
     bubble.appendChild(actions);
     div.appendChild(label);
     div.appendChild(bubble);
+    applyReadonlyToPending(div);
     return div;
   }
+
+  // 只读模式下,确认按钮直接禁掉 —— 这个界面不放行任何写操作
+  function applyReadonlyToPending(node) {
+    if (!node) return;
+    const btnOk = node.querySelector('.pending-confirm-ok');
+    const note  = node.querySelector('.pending-confirm-note');
+    const ro = agentMode === 'readonly';
+    if (btnOk) {
+      btnOk.disabled = ro;
+      btnOk.title = ro ? '当前是只读模式,不能批准写操作' : '';
+    }
+    if (note) {
+      note.textContent = ro ? '只读模式:如需执行,请先切到「每步确认」。' : '';
+    }
+  }
+
   function renderPending(pending) {
     clearPendingConfirmNode();
     if (!pending) {
@@ -2360,13 +3049,20 @@
   }
 
   // ──────── 发送消息(流式) ────────
-  async function sendMessage() {
+  //   resume=true 表示"没有新的用户输入,只是把 loop 续跑下去"(确认 pending 之后用),
+  //   这时不往对话流里插 user 气泡,也不往 history 里塞消息。
+  async function sendMessage(options) {
     if (sending) return;
-    if (!aiInput) return;
-    const text = aiInput.value.trim();
-    if (!text) return;
+    const resume = !!(options && options.resume);
+    let text = '';
+    if (!resume) {
+      if (!aiInput) return;
+      text = aiInput.value.trim();
+      if (!text) return;
+    }
 
     sending = true;
+    stopRequested = false;
     streamAbort = new AbortController();
     if (sendBtn) {
       sendBtn.disabled = false;  // 运行时允许点击以"停止"
@@ -2376,10 +3072,12 @@
     if (aiStatus) aiStatus.textContent = '运行中…';
 
     // 1. 立即把用户消息渲染上去
-    appendMessage('user', text);
-    aiInput.value = '';
-    autoResize();
-    history.push({ role: 'user', content: text });
+    if (!resume) {
+      appendMessage('user', text);
+      aiInput.value = '';
+      autoResize();
+      history.push({ role: 'user', content: text });
+    }
 
     // 2. loading 占位 + 顶栏绿灯
     const loading = appendLoading();
@@ -2405,6 +3103,18 @@
           await streamChatOnce(loading, text);
           return;                       // 成功:跳出
         } catch (err) {
+          // 用户主动停止不是故障,别弹红字
+          if (err && (err.name === 'AbortError' || stopRequested)) {
+            if (aiProgress) aiProgress.setAttribute('hidden', '');
+            setAgentLight('idle');
+            appendStatus('■ 已停止');
+            return;
+          }
+          if (isAuthError(err)) {
+            if (aiProgress) aiProgress.setAttribute('hidden', '');
+            setAgentLight('idle');
+            return;
+          }
           if (!isNetError(err) || attempt >= MAX_NET_RETRY) {
             if (loading && loading._progress && aiProgress) aiProgress.setAttribute('hidden', '');
             else if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
@@ -2437,7 +3147,7 @@
   // 网络层错误往外抛,业务/解析错误走 appendStatus 报告后正常返回。
   async function streamChatOnce(loading, text) {
 
-    const resp = await fetch('/api/chat/stream', {
+    const resp = await api('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -2462,6 +3172,10 @@
     let thinkEl  = null, thinkTextEl = null, thinkMeta = null;
     let answerEl = null, answerTextEl = null;
     let streamedAnswer = false;
+    let thinkRaw  = '';
+    let cancelled = false;
+    // 本轮对应第几次提问,思考过程按这个下标留档
+    const turnIndex = countUserTurns();
     // 跨事件用的瞬态变量(原本是 sendMessage 的局部变量,函数拆分后归到本函数内)
     let lastTool = '';
     let diffsThisTurn = 0;
@@ -2490,25 +3204,31 @@
           setLoadingStatus(loading, '开始运行…');
         } else if (evName === 'round') {
           setLoadingStatus(loading, '调用模型…');
-        } else if (evName === 'reasoning_delta') {
-            // 思考过程:小字、斜体、dim
+        } else if (evName === 'cancelled') {
+            // 服务端确认已经停下来了
+            cancelled = true;
+            setLoadingStatus(loading, '已停止');
+          } else if (evName === 'reasoning_delta') {
+            // 思考过程:小字、斜体、dim(默认折叠,只在头部滚动摘要)
             if (!thinkEl) {
               const built = makeStreamBubble(loading, 'msg-thinking');
               thinkEl = built.bubble;
               thinkTextEl = built.text;
               thinkMeta = built.updateThinkingMeta;
             }
-            thinkTextEl.textContent += evData.text;
-            if (thinkMeta) thinkMeta(thinkTextEl.textContent.length);
+            thinkRaw += evData.text;
+            thinkTextEl.textContent = thinkRaw;
+            if (thinkMeta) thinkMeta(thinkRaw.length);
             scrollToBottom();
           } else if (evName === 'content_delta') {
-            // 正文:正常样式
+            // 正文:边流边渲染 markdown(rAF 节流,一帧最多重渲一次)
             if (!answerEl) {
-              const built = makeStreamBubble(loading, 'msg-assistant msg-stream-answer');
+              const built = makeStreamBubble(loading, 'msg-assistant msg-stream-answer', true);
               answerEl = built.bubble;
               answerTextEl = built.text;
             }
-            answerTextEl.textContent += evData.text;
+            answerTextEl._raw = (answerTextEl._raw || '') + evData.text;
+            scheduleMarkdownRender(answerTextEl);
             streamedAnswer = true;
             scrollToBottom();
           } else if (evName === 'tool_call') {
@@ -2541,11 +3261,15 @@
             if (answerEl) answerEl.parentElement?.classList.add('msg-stream-done');
             if (thinkEl) {
               const thinkWrap = thinkEl.parentElement;
-              if (thinkWrap) thinkWrap.classList.add('msg-stream-done');
-              // 流结束:头部 meta 改成"已完成 · N KB",并默认展开
-              if (thinkMeta && thinkTextEl) thinkMeta(thinkTextEl.textContent.length, '');
-              if (thinkWrap) thinkWrap.classList.remove('msg-thinking-collapsed');
+              if (thinkWrap) {
+                thinkWrap.classList.add('msg-stream-done');
+                // 结束后保持折叠,只把头部换成一行摘要 —— 别把答案埋在思考过程下面
+                thinkWrap.classList.add('msg-thinking-collapsed');
+              }
+              if (thinkMeta) thinkMeta(thinkRaw.length, thinkingSummary(thinkRaw));
             }
+            // 思考过程后端不落库,自己留一份,刷新后还能还原
+            if (thinkRaw) setThinking(turnIndex, thinkRaw);
           } else if (evName === 'error') {
             throw new Error(evData.message || '流式错误');
           }
@@ -2557,6 +3281,11 @@
       if (loading && loading.parentNode) loading.parentNode.removeChild(loading);
 
       if (!finalData) {
+        if (cancelled || stopRequested) {
+          setAgentLight('idle');
+          appendStatus('■ 已停止');
+          return;
+        }
         setAgentLight('error');
         appendStatus('✗ 流中断,未收到 done');
         return;
@@ -2589,6 +3318,9 @@
       } else if (finalData.stopped === 'max_rounds') {
         setAgentLight('idle');
         appendStatus('⚠ 达到最大轮次,未收敛');
+      } else if (finalData.stopped === 'cancelled' || cancelled) {
+        setAgentLight('idle');
+        appendStatus('■ 已停止(本轮未跑完,已完成的改动仍在)');
       } else {
         setAgentLight('idle');
         // 完成行:用本轮新增的 diff 数(不累计旧值)
@@ -2597,11 +3329,25 @@
   }
 
   // 把节点插到 aiMessages 末尾(原版插到 loading 上方,新版 loading 改成顶部进度条,直接 appendChild)
+  // 工具调用现在只进顶栏面板,构造器返回的空占位节点直接丢掉,别在对话流里堆空 div
   function insertBeforeLoading(loadingEl, buildNode) {
     if (!aiMessages) return;
     const node = buildNode();
-    if (node && node.nodeType === 1) aiMessages.appendChild(node);
+    if (node && node.nodeType === 1 && node.childNodes.length) aiMessages.appendChild(node);
     scrollToBottom();
+  }
+
+  // 流式正文的增量 markdown 渲染:一帧最多重渲一次,
+  // 渲染结果照样过 DOMPurify(formatMarkdownLite 内部处理)。
+  function scheduleMarkdownRender(textEl) {
+    if (!textEl || textEl._raf) return;
+    textEl._raf = requestAnimationFrame(() => {
+      textEl._raf = null;
+      textEl.innerHTML = formatMarkdownLite(textEl._raw || '');
+      const cursor = document.createElement('span');
+      cursor.className = 'msg-stream-cursor';
+      textEl.appendChild(cursor);
+    });
   }
   // 流式输出:在 loading 上方建一个气泡(返回 {bubble, text} 用于持续 append)
   // useMarkdown: true  = 正文 (边输入边用 marked 重渲)
@@ -2616,7 +3362,7 @@
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble';
 
-    // Thinking 折叠:头部一行 + 可展开正文(默认折叠,等流结束再展开)
+    // Thinking 折叠:头部一行 + 可展开正文(全程折叠,想看点头部展开)
     let thinkingHeader = null;
     let body = document.createElement('div');
     if (isThinking) {
@@ -2670,8 +3416,8 @@
     if (n < 1024) return n + ' chars';
     return (n / 1024).toFixed(1) + ' KB';
   }
-  // 流式插入用的两个原始构造器,跟 appendToolCall/appendToolResult 等价但不依赖外部状态
   // ── 工具调用面板(顶栏左侧折叠面板) ──
+  // 流式运行和历史还原都往这里写,所以刷新前后工具调用的位置是一致的
   const toolPanelEl       = document.getElementById('tool-panel');
   const toolPanelToggle   = document.getElementById('tool-panel-toggle');
   const toolPanelBody     = document.getElementById('tool-panel-body');
@@ -2681,9 +3427,13 @@
   let toolPanelCount = 0;
 
   // 兜底:每次刷新页面都强制收起(防止上次的展开态被浏览器缓存)
-  if (toolPanelBody) {
-    toolPanelBody.setAttribute('hidden', '');
-    console.log('[codeforge] tool-panel-body forced hidden');
+  if (toolPanelBody) toolPanelBody.setAttribute('hidden', '');
+
+  // 重渲历史前先清空,免得同一批工具调用被叠加两遍
+  function resetToolPanel() {
+    if (toolPanelList) toolPanelList.innerHTML = '';
+    toolPanelCount = 0;
+    if (toolPanelBadge) toolPanelBadge.textContent = '0';
   }
 
   if (toolPanelToggle) {
@@ -2703,11 +3453,7 @@
     toolPanelBody.setAttribute('hidden', '');
   });
   if (toolPanelClear) {
-    toolPanelClear.addEventListener('click', () => {
-      if (toolPanelList) toolPanelList.innerHTML = '';
-      toolPanelCount = 0;
-      if (toolPanelBadge) toolPanelBadge.textContent = '0';
-    });
+    toolPanelClear.addEventListener('click', () => resetToolPanel());
   }
 
   function _toolStatusFromContent(txt) {
@@ -2799,32 +3545,6 @@
     catch (e) { return String(s); }
   }
 
-  // 从最后一条 user 之后开始,重新渲染(包含 tool_calls/tool/assistant)
-  function reRenderFromLastUser() {
-    if (!aiMessages) return;
-    // 找到最后一条 user 的 index
-    let lastUserIdx = -1;
-    for (let i = history.length - 1; i >= 0; i--) {
-      if (history[i].role === 'user') { lastUserIdx = i; break; }
-    }
-    // 删掉 ai-messages 里最后那条 user 之后的所有节点
-    const userNodes = aiMessages.querySelectorAll('.msg-user');
-    const lastUserNode = userNodes[userNodes.length - 1];
-    if (lastUserNode) {
-      let n = lastUserNode.nextSibling;
-      while (n) {
-        const nx = n.nextSibling;
-        n.parentNode && n.parentNode.removeChild(n);
-        n = nx;
-      }
-    }
-    // 重新追加 lastUserIdx 之后的所有消息节点
-    for (let i = lastUserIdx + 1; i < history.length; i++) {
-      appendHistoryNode(history[i]);
-    }
-    scrollToBottom();
-  }
-
   function autoResize() {
     if (!aiInput) return;
     aiInput.style.height = 'auto';
@@ -2832,15 +3552,25 @@
   }
 
   // ──────── 事件绑定 ────────
+  // 停止:光 abort 浏览器这一侧的 fetch 没用,服务端会继续跑工具、继续写文件,
+  // 必须同时通知后端置取消标志。
+  function stopRun() {
+    if (!sending) return;
+    stopRequested = true;
+    if (aiStatus) aiStatus.textContent = '正在停止…';
+    api('/api/chat/stop', { method: 'POST' })
+      .catch(err => { if (!isAuthError(err)) console.error('停止请求失败:', err); })
+      .finally(() => {
+        // 给服务端一点时间在事件边界收尾;超时就直接断流
+        setTimeout(() => { if (streamAbort) streamAbort.abort(); }, 400);
+      });
+  }
+
   if (sendBtn) {
     sendBtn.addEventListener('click', e => {
       e.preventDefault();
       // 运行时点击 = 停止
-      if (sending && streamAbort) {
-        streamAbort.abort();
-        appendStatus('已停止');
-        return;
-      }
+      if (sending) { stopRun(); return; }
       sendMessage();
     });
   }
@@ -2856,77 +3586,78 @@
   }
   if (togglePlan) {
     togglePlan.addEventListener('change', () => {
-      fetch('/api/agent/state', {
+      api('/api/agent/state', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ plan_model: togglePlan.checked }),
-      }).catch(err => console.error(err));
-    });
-  }
-  if (toggleAuto) {
-    toggleAuto.addEventListener('change', () => {
-      fetch('/api/agent/state', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ auto: toggleAuto.checked }),
-      }).catch(err => console.error(err));
+      }).catch(err => { if (!isAuthError(err)) console.error(err); });
     });
   }
   if (chatClear) {
     chatClear.addEventListener('click', () => {
       if (!confirm('确定清空当前对话?')) return;
-      fetch('/api/chat/clear', { method: 'POST' })
+      api('/api/chat/clear', { method: 'POST' })
         .then(r => r.json())
         .then(data => {
           if (data && data.ok) {
             history = [];
+            clearThinkStore();
             renderPending(null);
             renderHistory();
           }
         })
-        .catch(err => console.error(err));
+        .catch(err => { if (!isAuthError(err)) console.error(err); });
     });
   }
   if (chatRefresh) {
-    chatRefresh.addEventListener('click', () => {
-      // 重新拉模型列表(复用既有逻辑)
-      fetch('/api/models')
-        .then(r => r.json())
-        .then(d => {
-          const sel = document.querySelector('.model-select');
-          if (sel && d && Array.isArray(d.models)) {
-            sel.dataset.models = JSON.stringify(d.models);
-            const cur = d.models.find(m => m.id === d.current);
-            if (cur) {
-              const lbl = sel.querySelector('.model-label');
-              if (lbl) lbl.textContent = cur.name;
-            }
-          }
-        })
-        .catch(err => console.error(err));
-    });
+    chatRefresh.addEventListener('click', () => loadModels());
   }
   // 待确认气泡的"确认 / 拒绝"按钮(对话流内):事件代理到 aiMessages
   if (aiMessages) {
     aiMessages.addEventListener('click', (e) => {
       const btn = e.target.closest('.pending-confirm-btn');
-      if (!btn) return;
+      if (!btn || btn.disabled) return;
       const act = btn.dataset.action;
-      if (act === 'confirm') {
-        // 乐观关闭:用户已点确认,先把气泡收掉,避免等待后端响应
-        renderPending(null);
-        fetch('/api/agent/pending/confirm', { method: 'POST' }).catch(() => {});
-        if (aiInput) {
-          aiInput.value = '确认';
-          sendMessage();
-        }
-      } else if (act === 'reject') {
-        fetch('/api/agent/pending/reject', { method: 'POST' })
-          .then(r => r.json())
-          .then(() => { renderPending(null); appendStatus('✗ 已拒绝当前操作'); })
-          .catch(err => console.error(err));
-      }
+      if (act === 'confirm') confirmPending();
+      else if (act === 'reject') rejectPending();
     });
+  }
+
+  // 确认 pending:走 resume:false 只拿一次性授权,再用空消息续接流式,
+  // 这样用户还能看到后续的逐步输出。绝不再往输入框里塞"确认"两个字冒充用户发言。
+  async function confirmPending() {
+    if (agentMode === 'readonly') {
+      appendStatus('只读模式下不能批准写操作,请先切到「每步确认」。');
+      return;
+    }
+    if (sending) return;
+    // 乐观关闭:用户已点确认,先把气泡收掉,避免等待后端响应
+    renderPending(null);
+    try {
+      const r = await api('/api/agent/pending/confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ resume: false }),
+      });
+      const d = await safeJson(r);
+      if (!d.ok) {
+        appendStatus('✗ 确认失败: ' + (d.error || '未知错误'));
+        loadAgentState();
+        return;
+      }
+    } catch (e) {
+      if (!isAuthError(e)) appendStatus('✗ 确认失败: ' + e);
+      return;
+    }
+    appendStatus('✓ 已确认,继续执行');
+    sendMessage({ resume: true });
+  }
+
+  function rejectPending() {
+    api('/api/agent/pending/reject', { method: 'POST' })
+      .then(r => r.json())
+      .then(() => { renderPending(null); appendStatus('✗ 已拒绝当前操作'); })
+      .catch(err => { if (!isAuthError(err)) console.error(err); });
   }
   // 收起/展开终端
   const termCollapse = document.getElementById('term-collapse');
@@ -3079,7 +3810,7 @@
       try {
         const body = { command: cmd };
         if (activeSshSid) body.ssh_sid = activeSshSid;
-        const r = await fetch('/api/terminal/run', {
+        const r = await api('/api/terminal/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -3162,7 +3893,7 @@
   function disconnectActiveSsh() {
     if (!activeSshSid) return;
     const sid = activeSshSid;
-    fetch('/api/ssh/disconnect', {
+    api('/api/ssh/disconnect', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sid }),
@@ -3175,7 +3906,7 @@
 
   async function refreshSshSessions() {
     try {
-      const r = await fetch('/api/ssh/sessions').then(r => r.json());
+      const r = await api('/api/ssh/sessions').then(r => r.json());
       if (!r.ok) return;
       sshSessions.clear();
       for (const s of (r.sessions || [])) sshSessions.set(s.id, s);
@@ -3184,6 +3915,7 @@
 
   function openSshModal() {
     if (!sshModalMask) return;
+    hideHostKeyPrompt();
     sshModalErr.textContent = '';
     sshHostInput.value = '';
     sshPortInput.value = '22';
@@ -3195,6 +3927,70 @@
   }
   function closeSshModal() {
     if (sshModalMask) sshModalMask.style.display = 'none';
+  }
+
+  // ── 首次连接的主机指纹确认(TOFU) ──
+  const sshHostKeyEl     = document.getElementById('ssh-hostkey');
+  const sshHostKeyFpEl   = document.getElementById('ssh-hostkey-fp');
+  const sshHostKeyKnown  = document.getElementById('ssh-hostkey-known');
+  const sshHostKeyTrust  = document.getElementById('ssh-hostkey-trust');
+  const sshHostKeyCancel = document.getElementById('ssh-hostkey-cancel');
+  let sshConfirmToken = null;
+
+  function hideHostKeyPrompt() {
+    sshConfirmToken = null;
+    if (sshHostKeyEl) sshHostKeyEl.setAttribute('hidden', '');
+  }
+  function showHostKeyPrompt(detail) {
+    if (!sshHostKeyEl) {
+      sshModalErr.textContent = detail.message || '主机指纹未通过校验';
+      return;
+    }
+    sshConfirmToken = detail.confirm_token || null;
+    sshHostKeyFpEl.textContent =
+      `${detail.key_type || '?'}  ${detail.fingerprint || '(无指纹)'}`;
+    const known = detail.known_fingerprints || [];
+    sshHostKeyKnown.textContent = known.length
+      ? `known_hosts 里已记录:${known.join(' , ')}`
+      : (detail.message || '');
+    // 指纹不匹配时没有 token,只能人工处理,不给"信任"按钮
+    if (sshHostKeyTrust) sshHostKeyTrust.style.display = sshConfirmToken ? '' : 'none';
+    sshHostKeyEl.removeAttribute('hidden');
+  }
+  if (sshHostKeyCancel) {
+    sshHostKeyCancel.addEventListener('click', () => {
+      const token = sshConfirmToken;
+      hideHostKeyPrompt();
+      if (token) {
+        api('/api/ssh/host_key/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token }),
+        }).catch(() => {});
+      }
+    });
+  }
+  if (sshHostKeyTrust) {
+    sshHostKeyTrust.addEventListener('click', async () => {
+      if (!sshConfirmToken) return;
+      sshHostKeyTrust.disabled = true;
+      try {
+        const r = await api('/api/ssh/host_key/confirm', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token: sshConfirmToken }),
+        });
+        const d = await safeJson(r);
+        if (!d.ok) { sshModalErr.textContent = d.error || '写入 known_hosts 失败'; return; }
+        hideHostKeyPrompt();
+        // 指纹已记下,重新发起连接
+        doSshConnect();
+      } catch (e) {
+        if (!isAuthError(e)) sshModalErr.textContent = '确认失败: ' + e;
+      } finally {
+        sshHostKeyTrust.disabled = false;
+      }
+    });
   }
 
   async function doSshConnect() {
@@ -3210,19 +4006,22 @@
     sshConnectBtn.textContent = '连接中...';
     sshModalErr.textContent = '';
     try {
-      const r = await fetch('/api/ssh/connect', {
+      const resp = await api('/api/ssh/connect', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ host, port, user, password, key_path }),
-      }).then(r => r.json());
+      });
+      const r = await safeJson(resp);
+      if (resp.status === 409) { showHostKeyPrompt(r || {}); return; }
       if (!r.ok) { sshModalErr.textContent = r.error || '连接失败'; return; }
+      hideHostKeyPrompt();
       sshSessions.set(r.session.id, r.session);
       setActiveSsh(r.session.id);
       closeSshModal();
       appendTermLine(`[SSH 已连接 → ${user}@${host}:${port}]`, 'term-ok');
       // 自动跑一下 pwd,确认能执行
       try {
-        const rr = await fetch('/api/terminal/run', {
+        const rr = await api('/api/terminal/run', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ command: 'pwd', ssh_sid: r.session.id }),
@@ -3230,7 +4029,7 @@
         if (rr.stdout) appendTermLine(`(远程 cwd) ${rr.stdout}`, 'term-out');
       } catch {}
     } catch (err) {
-      sshModalErr.textContent = '网络错误: ' + (err.message || err);
+      if (!isAuthError(err)) sshModalErr.textContent = '网络错误: ' + (err.message || err);
     } finally {
       sshConnectBtn.disabled = false;
       sshConnectBtn.textContent = '连接';
@@ -3266,7 +4065,7 @@
       });
       row.querySelector('.ls').addEventListener('click', async () => {
         try {
-          const r = await fetch(`/api/ssh/list?sid=${encodeURIComponent(s.id)}&path=.`)
+          const r = await api(`/api/ssh/list?sid=${encodeURIComponent(s.id)}&path=.`)
             .then(r => r.json());
           if (r.ok) {
             const lines = (r.items || []).map(it =>
@@ -3281,7 +4080,7 @@
         }
       });
       row.querySelector('.del').addEventListener('click', async () => {
-        await fetch('/api/ssh/disconnect', {
+        await api('/api/ssh/disconnect', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sid: s.id }),
@@ -3327,15 +4126,6 @@
   if (sshUserInput) sshUserInput.addEventListener('keydown', e => { if (e.key === 'Enter') doSshConnect(); });
   if (sshKeyInput)  sshKeyInput.addEventListener('keydown',  e => { if (e.key === 'Enter') doSshConnect(); });
 
-  // 启动时拉一次,补齐状态(防止后端有遗留 session)
-  refreshSshSessions().then(() => {
-    if (sshSessions.size > 0) {
-      // 默认选第一个
-      const first = sshSessions.values().next().value;
-      if (first) setActiveSsh(first.id);
-    }
-  });
-
   // ──────── 全局快捷键:聚焦输入框 ────────
   document.addEventListener('keydown', e => {
     if (!(e.ctrlKey || e.metaKey)) return;
@@ -3346,16 +4136,28 @@
     }
   });
 
-  // 启动时拉一次
-  loadChat();
-  loadAgentState();
-  loadDiffList();        // diff viewer 初始为空列表(后端清空状态)
-
   // 应用配置(流式输出开关、轮数上限) — 来自 .config.json
   let appConfig = { flow: false, max_round: 20 };
-  fetch('/api/config').then(r => r.json()).then(d => {
-    if (d && d.ok) appConfig = { flow: !!d.flow, max_round: d.max_round || 20 };
-  }).catch(() => {});
+
+  // 启动时统一拉一遍;没有令牌 / 令牌错的时候这里会 401,
+  // 用户在粘贴框里补上令牌后再整体重跑一次。
+  function bootstrapData() {
+    loadModels();
+    loadChat();
+    loadAgentState();
+    // diff viewer 初始为空列表(后端清空状态)
+    loadDiffList();
+    api('/api/config').then(r => r.json()).then(d => {
+      if (d && d.ok) appConfig = { flow: !!d.flow, max_round: d.max_round || 20 };
+    }).catch(() => {});
+    initExplorer();
+    refreshSshSessions().then(() => {
+      if (sshSessions.size > 0) {
+        const first = sshSessions.values().next().value;
+        if (first) setActiveSsh(first.id);
+      }
+    });
+  }
 
   // ──────── 全局搜索 ────────
   const searchInputEl   = document.getElementById('search-input');
@@ -3383,7 +4185,7 @@
     searchMetaEl.textContent = '搜索中…';
     try {
       const cwd = currentRoot || '';
-      const r = await fetch('/api/search?q=' + encodeURIComponent(q)
+      const r = await api('/api/search?q=' + encodeURIComponent(q)
         + (cwd ? '&path=' + encodeURIComponent(cwd) : ''));
       const d = await r.json();
       if (!d.ok) {
@@ -3409,11 +4211,13 @@
         row.addEventListener('click', () => {
           const p = row.dataset.path;
           const ln = parseInt(row.dataset.line, 10);
-          openFile(p, ln);
+          if (p) openFileInEditor(p, ln);
         });
       });
     } catch (e) {
-      searchResultsEl.innerHTML = `<div class="search-empty">⚠ ${escapeHtml(String(e))}</div>`;
+      if (!isAuthError(e)) {
+        searchResultsEl.innerHTML = `<div class="search-empty">⚠ ${escapeHtml(String(e))}</div>`;
+      }
       searchMetaEl.textContent = '';
     } finally {
       searchBusy = false;
@@ -3438,9 +4242,234 @@
     });
   }
 
+  // ════════════════════════════════════════════════════════════
+  //          快速打开(Ctrl+P)/ 文件内查找(Ctrl+F)
+  // ════════════════════════════════════════════════════════════
+  //   后端没有"按文件名搜索"的接口,这里用 /api/folder 做一次有上限的广度遍历,
+  //   把文件名索引缓存在内存里;换根目录或手动刷新时作废。
+  const quickMask   = document.getElementById('quickopen-mask');
+  const quickInput  = document.getElementById('quickopen-input');
+  const quickList   = document.getElementById('quickopen-list');
+  const quickMeta   = document.getElementById('quickopen-meta');
+  const QUICK_MAX_FILES = 4000;
+  const QUICK_MAX_DIRS  = 400;
+  const QUICK_SKIP_DIRS = new Set([
+    '.git', '.hg', '.svn', 'node_modules', '__pycache__', '.venv', 'venv',
+    'dist', 'build', 'out', '.next', '.idea', '.vscode', '.pytest_cache',
+  ]);
+  // quickIndex 是 [{name, path, rel}];quickIndexing 是正在建索引的 Promise
+  let quickIndex     = null;
+  let quickIndexRoot = null;
+  let quickIndexing  = null;
+  let quickTruncated = false;
+  let quickActive    = 0;
+  let quickShown     = [];
+
+  function invalidateQuickIndex() {
+    quickIndex = null;
+    quickIndexRoot = null;
+    quickIndexing = null;
+  }
+
+  async function buildQuickIndex(root) {
+    const files = [];
+    const queue = [root];
+    let dirs = 0;
+    quickTruncated = false;
+    while (queue.length && dirs < QUICK_MAX_DIRS && files.length < QUICK_MAX_FILES) {
+      const dir = queue.shift();
+      dirs++;
+      let tree = null;
+      try {
+        const r = await api('/api/folder?path=' + encodeURIComponent(dir));
+        const d = await r.json();
+        if (d && d.ok && d.tree) tree = d.tree;
+      } catch (e) {
+        if (isAuthError(e)) throw e;
+      }
+      if (!tree) continue;
+      for (const f of (tree.files || [])) {
+        files.push({ name: f.name, path: f.path, rel: relTo(root, f.path) });
+        if (files.length >= QUICK_MAX_FILES) break;
+      }
+      for (const d of (tree.folders || [])) {
+        if (QUICK_SKIP_DIRS.has(d.name) || d.name.startsWith('.')) continue;
+        queue.push(d.path);
+      }
+    }
+    if (queue.length || files.length >= QUICK_MAX_FILES) quickTruncated = true;
+    return files;
+  }
+
+  function relTo(root, full) {
+    const r = String(root).replace(/[\\/]+$/, '');
+    const f = String(full);
+    return f.startsWith(r) ? f.slice(r.length).replace(/^[\\/]+/, '') : f;
+  }
+
+  // 子序列模糊匹配:"apjs" 能命中 "static/app.js";返回得分,越小越好
+  function fuzzyScore(text, query) {
+    const t = text.toLowerCase();
+    const q = query.toLowerCase();
+    let ti = 0, score = 0, first = -1;
+    for (let qi = 0; qi < q.length; qi++) {
+      const hit = t.indexOf(q[qi], ti);
+      if (hit === -1) return -1;
+      if (first === -1) first = hit;
+      score += hit - ti;
+      ti = hit + 1;
+    }
+    return score + first + t.length * 0.01;
+  }
+
+  function renderQuickList(query) {
+    if (!quickList) return;
+    const all = quickIndex || [];
+    let rows;
+    if (!query) {
+      rows = all.slice(0, 50);
+    } else {
+      rows = all
+        .map(f => ({ f, s: fuzzyScore(f.rel || f.name, query) }))
+        .filter(x => x.s >= 0)
+        .sort((a, b) => a.s - b.s)
+        .slice(0, 50)
+        .map(x => x.f);
+    }
+    quickShown = rows;
+    quickActive = 0;
+    if (!rows.length) {
+      quickList.innerHTML = '<div class="quickopen-empty">无匹配文件</div>';
+      return;
+    }
+    quickList.innerHTML = rows.map((f, i) => (
+      `<div class="quickopen-item${i === 0 ? ' active' : ''}" data-idx="${i}">` +
+        `<span class="quickopen-name">${escapeHtml(f.name)}</span>` +
+        `<span class="quickopen-path">${escapeHtml(f.rel || f.path)}</span>` +
+      `</div>`
+    )).join('');
+    quickList.querySelectorAll('.quickopen-item').forEach(el => {
+      el.addEventListener('click', () => {
+        quickActive = parseInt(el.dataset.idx, 10) || 0;
+        openQuickActive();
+      });
+    });
+  }
+
+  function highlightQuickActive() {
+    if (!quickList) return;
+    quickList.querySelectorAll('.quickopen-item').forEach((el, i) => {
+      el.classList.toggle('active', i === quickActive);
+      if (i === quickActive) el.scrollIntoView({ block: 'nearest' });
+    });
+  }
+
+  function openQuickActive() {
+    const f = quickShown[quickActive];
+    if (!f) return;
+    closeQuickOpen();
+    openFileInEditor(f.path);
+  }
+
+  function closeQuickOpen() {
+    if (quickMask) quickMask.style.display = 'none';
+  }
+
+  async function openQuickOpen() {
+    if (!quickMask || !quickInput) return;
+    if (!currentRoot) { appendStatus('请先打开一个文件夹'); return; }
+    quickMask.style.display = 'flex';
+    quickInput.value = '';
+    quickInput.focus();
+    if (quickIndex && quickIndexRoot === currentRoot) {
+      quickMeta.textContent = quickMetaText();
+      renderQuickList('');
+      return;
+    }
+    quickList.innerHTML = '<div class="quickopen-empty">正在建立文件索引…</div>';
+    quickMeta.textContent = '';
+    const root = currentRoot;
+    if (!quickIndexing) quickIndexing = buildQuickIndex(root);
+    try {
+      const files = await quickIndexing;
+      quickIndex = files;
+      quickIndexRoot = root;
+    } catch (e) {
+      quickList.innerHTML = '<div class="quickopen-empty">索引失败</div>';
+      return;
+    } finally {
+      quickIndexing = null;
+    }
+    quickMeta.textContent = quickMetaText();
+    renderQuickList(quickInput.value.trim());
+  }
+
+  function quickMetaText() {
+    const n = (quickIndex || []).length;
+    return `已索引 ${n} 个文件${quickTruncated ? '(已达上限,结果可能不全)' : ''}`;
+  }
+
+  if (quickInput) {
+    quickInput.addEventListener('input', () => renderQuickList(quickInput.value.trim()));
+    quickInput.addEventListener('keydown', e => {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        quickActive = Math.min(quickActive + 1, quickShown.length - 1);
+        highlightQuickActive();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        quickActive = Math.max(quickActive - 1, 0);
+        highlightQuickActive();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        openQuickActive();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeQuickOpen();
+      }
+    });
+  }
+  if (quickMask) {
+    quickMask.addEventListener('click', e => {
+      if (e.target === quickMask) closeQuickOpen();
+    });
+  }
+
+  document.addEventListener('keydown', e => {
+    if (!(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) return;
+    const key = e.key.toLowerCase();
+    if (key === 'p') {
+      e.preventDefault();
+      openQuickOpen();
+    } else if (key === 'f') {
+      // 只在编辑器打开时接管,否则把 Ctrl+F 还给浏览器
+      if (currentEditor && typeof currentEditor.openFind === 'function') {
+        e.preventDefault();
+        currentEditor.openFind();
+      }
+    }
+  });
+
   // ============ 主题切换 ============
   const THEME_KEY = 'codeforge.theme';
   const themeSwitch = document.getElementById('theme-switch');
+
+  // 从 DOM 反推当前主题,不额外维护状态,避免与 localStorage 不一致
+  function activeThemeName() {
+    const c = document.documentElement.classList;
+    if (c.contains('theme-light')) return 'light';
+    if (c.contains('theme-blue')) return 'blue';
+    return 'dark';
+  }
+
+  // CodeMirror 自带主题与应用主题的映射,三套 CSS 都在 index.html 里预加载。
+  // midnight 的背景 rgb(15,25,42) 与深蓝主题的 --bg-base #0e1a2b 每通道只差 1,
+  // 而 dracula 的 rgb(40,42,54) 偏紫灰,放在深蓝面板里像贴了一块黑补丁。
+  const CM_THEMES = { light: 'eclipse', blue: 'midnight', dark: 'dracula' };
+  function cmThemeFor(name) {
+    return CM_THEMES[name] || CM_THEMES.dark;
+  }
+
   function applyTheme(name) {
     document.documentElement.classList.remove('theme-light', 'theme-blue');
     if (name === 'light') document.documentElement.classList.add('theme-light');
@@ -3452,6 +4481,10 @@
       themeSwitch.querySelectorAll('.theme-btn').forEach(b => {
         b.classList.toggle('active', b.dataset.theme === name);
       });
+    }
+    // 编辑器主题跟随:否则切到白天模式后编辑器仍是深色
+    if (currentEditor && currentEditor.cm) {
+      currentEditor.cm.setOption('theme', cmThemeFor(name));
     }
   }
   if (themeSwitch) {
@@ -3476,7 +4509,6 @@
     }
     // 没缓存 → 保持空状态 UI(等用户主动打开)
   }
-  initExplorer();
 
   // ============ 列宽拖拽手柄 ============
   // 拖动 .resize-handle 改变相邻列的宽度(支持 .sidebar 和 .right)
@@ -3512,4 +4544,8 @@
       document.addEventListener('mouseup', onUp);
     });
   });
+
+  // ── 一切定义完毕后再启动:有令牌就直接拉数据,没有就先要令牌 ──
+  if (authToken) bootstrapData();
+  else showTokenPrompt('');
 })();
