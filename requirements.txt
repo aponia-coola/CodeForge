@@ -3,10 +3,9 @@
 # 跨大版本升级请先跑 tests/ 再抬上界,不要让 pip 静默解析到未验证的大版本。
 #
 # 实测通过的版本(Python 3.11):
-#   flask 3.1.3 / asgiref 3.11.1 / openai 2.43.0 / asyncssh 2.23.1 / watchdog 6.0.0
+#   flask 3.1.3 / openai 2.43.0 / asyncssh 2.23.1 / watchdog 6.0.0
 
 flask>=2.3,<4
-asgiref>=3.7,<4
 openai>=1.0,<3
 asyncssh>=2.13,<3
 watchdog>=4.0,<7

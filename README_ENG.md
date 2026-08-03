@@ -8,23 +8,20 @@
 
 ---
 
-## Core Features
+## Core Highlights
 
-| Module | Capability |
+| Highlight | What it does |
 | --- | --- |
-| **Agent Loop** | `plan -> act -> answer` closed loop; all 7 tools go through a single dispatch approval gate |
-| **Local Auth** | Host allowlist -> Origin same-origin -> `X-CodeForge-Token` three layers; binds to loopback by default |
-| **Path Sandbox** | All reads/writes pass through `sandbox.resolve()`; out-of-bounds returns 403; governance files are protected from agent writes |
-| **Multi-Model Hot-Swap** | Switch/add/remove models in real time via Web UI; `model.json` / `model.local.json` changes are hot-reloaded by watchdog; keys via env vars or untracked local layer; API never echoes plaintext keys |
-| **File/Dir Management** | Create, rename, duplicate, move, delete, read, save; encoding and line endings preserved as-is |
-| **Global Search** | Case-insensitive substring search, recursive across directories |
-| **Git Integration** | `status / diff / stage / unstage / discard / commit / push` |
-| **SSH Remote Sessions** | Multi-session management, remote directory listing, remote execution; host key TOFU verification |
-| **Local Terminal** | Process-group kill on timeout; output decoded utf-8 -> locale in order |
-| **Diff Review** | `edit_file` changes stay in memory; user clicks "Apply" to write to disk; disk content is verified against baseline before writing |
-| **SSE Streaming** | Push as it thinks; frontend shows "Round N / calling tool X / tool returned" in real time |
-| **Session Isolation** | `X-CodeForge-Session` isolates history / approvals / diffs per browser tab |
-| **One-Click Launch** | `start.sh` / `start.ps1` auto-creates venv, installs deps, detects port, opens browser with token |
+| **Plan-before-Act Workflow** | Before touching any file, the model must call the `plan` tool with a structured proposal (intent / direction / basis / affected files / steps / risk level). The loop stops here for user review. Not a prompt "suggestion" — a hard constraint enforced at the loop level |
+| **Centralized Approval Gate** | All 7 tools' approval policies are enforced centrally in `dispatch()`. New tools inherit the gate automatically — no "forgot to add an approval check" loophole. `run_command` ignores the `auto` switch; every call requires per-item confirmation |
+| **One-time Scoped Approval** | Confirming "delete a.txt" does not also allow "delete b.txt" — the approval record matches action + key parameters (`file_path` / `command`+`cwd`), is consumed once, and never opens a global switch |
+| **SHA256 Overwrite Protection** | `edit_file` patches stay in memory only. On "Apply", the disk content's SHA256 is compared against the baseline; mismatch returns `409` — your manual editor saves won't be silently overwritten by the agent's patch |
+| **Self-Modification Block** | `prompt.json` / `model.json` / `.config.json` / `sandbox.py` are write-protected from the agent even inside the workspace. Blocks the "agent rewrites its own system prompt, permanently affecting all future sessions" attack vector |
+| **DNS Rebinding Defense** | Three-layer auth: Host allowlist (loopback names / IP literals / explicit config only) → Origin same-origin → `X-CodeForge-Token` (constant-time comparison). An attacker's webpage can rebind their domain to 127.0.0.1 to bypass browser same-origin, but the Host header exposes the domain and is rejected here |
+| **Three-Layer Key Resolution + Leak Prevention** | API key priority: env var → untracked `model.local.json` → tracked `model.json`. The system never writes back to `model.json`. API responses are serialized and scanned against all in-process keys (full string + 12-char sliding window); matches are replaced with `500 key_leak` instead of leaking the key |
+| **Per-Tab Session Isolation** | `X-CodeForge-Session` isolates history / approvals / diff pools per sid. Two tabs with different sids don't interfere. RLock-protected; single-user defaults to the `default` session |
+| **Hot Reload Without Restart** | Model list, system prompt, and global switches all support file-watcher hot reload with atomic writes (`os.replace`) and self-trigger suppression. No restart needed after changes |
+| **SSE Streaming + Retry Backoff** | Push as it thinks; frontend shows "Round N / calling tool X / tool returned" in real time. Model request failures retry with exponential backoff; deterministic errors (permission/path) are not retried |
 
 ---
 
@@ -73,7 +70,7 @@ codeforge/
 ### Linux / macOS / Termux
 
 ```bash
-git clone <your-repo-url> codeforge
+git clone https://github.com/aponia-coola/codeforge.git
 cd codeforge
 ./start.sh                       # Default 127.0.0.1:9191, auto-opens browser
 ./start.sh --port 8080           # Custom port
@@ -489,15 +486,6 @@ python main.py --port 9191 --debug
 The launch scripts redirect stdout / stderr to `log/server.log` and `log/server.err.log` respectively. On first launch, legacy logs in the root directory are migrated into `log/`.
 
 There is one platform difference: `start.sh` appends (`>>`); Windows redirection cannot append, so `start.ps1` first rotates the previous log to `log/server.prev.log` / `log/server.err.prev.log` before writing new ones. Use `.\start.ps1 -Console` to skip file logging.
-
----
-
-## Known Issues
-
-- `models/model.json` contains plaintext API keys and is tracked by git; keys have entered commit history.
-- The frontend loads CodeMirror, marked, and DOMPurify from cdnjs / jsdelivr without SRI; editor and Markdown rendering are unavailable offline.
-- `asgiref` in `requirements.txt` is currently not referenced by any code.
-- On Windows, `terminal.engine.run()` uses `subprocess.list2cmdline` to build the command line; double quotes in commands are escaped to `\"` and passed to `cmd.exe`, breaking arguments with quotes (and interpreter paths with spaces), silently.
 
 ---
 

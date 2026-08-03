@@ -8,23 +8,20 @@
 
 ---
 
-## ✨ 核心特性
+## ✨ 核心亮点
 
-| 模块 | 能力 |
+| 亮点 | 做了什么 |
 | --- | --- |
-| **Agent Loop** | `plan → act → answer` 闭环;7 个工具全部走同一个 dispatch 审批门 |
-| **本地认证** | Host 白名单 → Origin 同源 → `X-CodeForge-Token` 三道关卡,默认只绑回环 |
-| **路径沙箱** | 所有读写先过 `sandbox.resolve()`,越界 403;治理文件禁止 agent 改写 |
-| **多模型热切换** | Web UI 实时切换与增删模型,`model.json` / `model.local.json` 改动由 watchdog 自动热重载;key 走环境变量或 untracked 本地层,接口永不回显明文 |
-| **文件/目录管理** | 创建、重命名、复制、移动、删除、读取、保存;编码与行尾原样保留 |
-| **全局搜索** | 子串大小写不敏感,跨目录递归定位 |
-| **Git 集成** | `status / diff / stage / unstage / discard / commit / push` |
-| **SSH 远程会话** | 多会话管理、远程列目录、远端执行;主机指纹 TOFU 校验 |
-| **本地终端** | 超时后按进程组杀干净;输出按 utf-8 → locale 顺序解码 |
-| **Diff 审查** | `edit_file` 的改动先进内存,用户点「应用」才落盘,落盘前校验文件有没有被外部改过 |
-| **SSE 流式输出** | 边想边推,前端实时显示「第 N 轮 / 调用工具 X / 工具返回」 |
-| **会话隔离** | `X-CodeForge-Session` 按标签页隔离 history / 审批 / diff,互不干扰 |
-| **一键启动** | `start.sh` / `start.ps1` 自动建 venv、装依赖、检测端口、带 token 开浏览器 |
+| **Plan-before-Act 工作流** | 模型在动任何文件之前,必须先调 `plan` 工具提交结构化方案(目标 / 方向 / 依据 / 影响文件 / 步骤 / 风险等级),loop 在此处停下等用户审阅。不是 prompt 里的"建议",是 loop 级别的硬约束 |
+| **集中式审批门** | 7 个工具的审批策略集中在 `dispatch()` 里统一执行,新增工具自动继承,不存在"忘了抄一份审批检查"的漏洞。`run_command` 无视 auto 开关,每次都必须逐条确认 |
+| **一次性作用域授权** | 确认"删 a.txt"不会顺带放行"删 b.txt"——授权记录精确匹配 action + 关键参数(`file_path` / `command`+`cwd`),消费一次即失效,绝不打开全局开关 |
+| **SHA256 防覆盖** | `edit_file` 的 patch 只存在内存里;用户点「应用」时,先把磁盘内容的 sha256 与生成 patch 时的基线对比,不一致直接返回 `409`——你在编辑器里的手动保存不会被 agent 静默盖掉 |
+| **自我修改闭环阻断** | `prompt.json` / `model.json` / `.config.json` / `sandbox.py` 四个治理文件即使在工作区内也禁止 agent 改写,堵死"agent 改写自己的系统提示词,对之后所有会话永久生效"这条路径 |
+| **DNS Rebinding 防御** | 三层认证:Host 白名单(只认回环名 / IP 字面量 / 显式配置)→ Origin 同源 → `X-CodeForge-Token`(恒定时间比较)。攻击者网页把域名重绑定到 127.0.0.1 骗过浏览器同源策略,但 Host 头会暴露域名,在这一层被拒 |
+| **三层 key 解析 + 防泄漏** | API key 优先级:环境变量 → 未跟踪的 `model.local.json` → 跟踪的 `model.json`。系统从不回写 `model.json`。API 响应序列化后逐条比对进程内所有 key(整串 + 12 字符滑窗),命中就换成 `500 key_leak` 而不是把 key 发出去 |
+| **按标签页会话隔离** | `X-CodeForge-Session` 按 sid 隔离 history / 审批 / diff 池,两个标签页各带各的 sid 互不干扰。RLock 保护,单用户默认全部落到 `default` 会话 |
+| **热重载不停服** | 模型清单、系统提示词、全局开关全部支持文件监听热重载,原子写(`os.replace`)+ 自触发抑制,改完不用重启 |
+| **SSE 流式 + 重试退避** | 边想边推,前端实时显示「第 N 轮 / 调用工具 X / 工具返回」。模型请求失败按指数退避重试,确定性异常(权限/路径错误)不重试 |
 
 ---
 
@@ -73,7 +70,7 @@ codeforge/
 ### Linux / macOS / Termux
 
 ```bash
-git clone <your-repo-url> codeforge
+git clone https://github.com/aponia-coola/codeforge.git
 cd codeforge
 ./start.sh                       # 默认 127.0.0.1:9191,自动开浏览器
 ./start.sh --port 8080           # 自定义端口
@@ -162,22 +159,6 @@ sid 只接受 `[A-Za-z0-9-_]` 且不超过 64 字符,非法值按缺省处理。
 Host 白名单挡的是 **DNS rebinding**:攻击者的网页可以把自己的域名重绑定到 `127.0.0.1` 骗过浏览器同源策略,
 但 Host 头会带上那个域名,在这一层被拒。IP 字面量无法被重绑定,所以放行,局域网按 IP 访问不受影响。
 
----
-
-## ⚙️ 配置
-
-### `.config.json` — 全局开关
-
-**这是严格 JSON,不能写注释。**写了注释解析会失败,而配置读取把解析异常吞成 `{}`,
-结果是所有开关静默回落到默认值 —— 你不会看到任何报错,只会发现设置没生效。
-
-```json
-{
-    "flow": true,
-    "max_round": 20,
-    "workspace_roots": ["~/projects", "~/work"]
-}
-```
 
 | 键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
@@ -520,30 +501,8 @@ python main.py --port 9191 --debug
 
 ---
 
-## 📝 日志
-
-启动脚本把 stdout / stderr 分别重定向到 `log/server.log` 和 `log/server.err.log`,
-首次启动会把历史上落在根目录的同名旧日志迁进 `log/`。
-
-两个脚本有一处平台差异:`start.sh` 是追加写(`>>`),Windows 的重定向做不到追加,
-所以 `start.ps1` 先把上一次的日志转存成 `log/server.prev.log` / `log/server.err.prev.log` 再写新的。
-不想写文件就用 `.\start.ps1 -Console`。
-
----
-
-## ⚠️ 已知问题
-
-- `models/model.json` 含明文 API key 且被 git 跟踪,密钥已进入提交历史。
-- 前端从 cdnjs / jsdelivr 加载 CodeMirror、marked、DOMPurify,未配置 SRI;离线环境下编辑器与 Markdown 渲染不可用。
-- `requirements.txt` 里的 `asgiref` 当前没有任何代码引用。
-- Windows 上 `terminal.engine.run()` 经 `subprocess.list2cmdline` 拼命令行,命令里的双引号会被转义成 `\"`
-  再交给 `cmd.exe`,带引号的参数(以及带空格的解释器路径)会被破坏,且不报错。
-
----
-
 ## 🗺️ Roadmap
 
-- [ ] 把 CDN 依赖 vendor 到本地
 - [ ] `read_file` 分段读 + 历史压缩,控制长会话的 token 增长
 - [ ] 资源管理器轮询在页面隐藏时暂停
 - [ ] 多 Agent 协作 / Sub-Agent
@@ -551,6 +510,3 @@ python main.py --port 9191 --debug
 
 ---
 
-## 📄 License
-
-[MIT](LICENSE)。`LICENSE` 里的版权行目前是占位符 `<YOUR NAME>`,请替换成你自己的署名。

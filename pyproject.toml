@@ -15,7 +15,6 @@ keywords        = ["agent", "ide", "llm", "flask", "termux"]
 
 dependencies = [
     "flask>=2.3,<4",
-    "asgiref>=3.7,<4",
     "openai>=1.0,<3",
     "asyncssh>=2.13,<3",
     "watchdog>=4.0,<7",
