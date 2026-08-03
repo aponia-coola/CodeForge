@@ -6,7 +6,7 @@ __pycache__/
 .vscode/
 .claude/
 .codex/
-
+AGENTS.md
 # 本地模型覆盖层:真实 key 只放这里,永不进仓库
 models/model.local.json
 
