@@ -1,5 +1,7 @@
 # CodeForge
 
+[English](README_ENG.md)
+
 > 一款运行在 **Termux / Linux / macOS / Windows** 上的轻量级 **AI Agent IDE**。
 > 基于 Flask + OpenAI 兼容协议,内置 **plan / act / answer** 三阶段工作流,
 > 让模型在改动你的代码之前,先把方案摆到桌面上等你点头。
@@ -10,19 +12,19 @@
 
 | 模块 | 能力 |
 | --- | --- |
-| 🤖 **Agent Loop** | `plan → act → answer` 闭环;7 个工具全部走同一个 dispatch 审批门 |
-| 🔐 **本地认证** | Host 白名单 → Origin 同源 → `X-CodeForge-Token` 三道关卡,默认只绑回环 |
-| 🧱 **路径沙箱** | 所有读写先过 `sandbox.resolve()`,越界 403;治理文件禁止 agent 改写 |
-| 🧠 **多模型热切换** | Web UI 实时切换与增删模型,`model.json` / `model.local.json` 改动由 watchdog 自动热重载;key 走环境变量或 untracked 本地层,接口永不回显明文 |
-| 📂 **文件/目录管理** | 创建、重命名、复制、移动、删除、读取、保存;编码与行尾原样保留 |
-| 🔍 **全局搜索** | 子串大小写不敏感,跨目录递归定位 |
-| 🌿 **Git 集成** | `status / diff / stage / unstage / discard / commit / push` |
-| 🔑 **SSH 远程会话** | 多会话管理、远程列目录、远端执行;主机指纹 TOFU 校验 |
-| 💻 **本地终端** | 超时后按进程组杀干净;输出按 utf-8 → locale 顺序解码 |
-| 🟢 **Diff 审查** | `edit_file` 的改动先进内存,用户点「应用」才落盘,落盘前校验文件有没有被外部改过 |
-| 📡 **SSE 流式输出** | 边想边推,前端实时显示「第 N 轮 / 调用工具 X / 工具返回」 |
-| 🧵 **会话隔离** | `X-CodeForge-Session` 按标签页隔离 history / 审批 / diff,互不干扰 |
-| 🚀 **一键启动** | `start.sh` / `start.ps1` 自动建 venv、装依赖、检测端口、带 token 开浏览器 |
+| **Agent Loop** | `plan → act → answer` 闭环;7 个工具全部走同一个 dispatch 审批门 |
+| **本地认证** | Host 白名单 → Origin 同源 → `X-CodeForge-Token` 三道关卡,默认只绑回环 |
+| **路径沙箱** | 所有读写先过 `sandbox.resolve()`,越界 403;治理文件禁止 agent 改写 |
+| **多模型热切换** | Web UI 实时切换与增删模型,`model.json` / `model.local.json` 改动由 watchdog 自动热重载;key 走环境变量或 untracked 本地层,接口永不回显明文 |
+| **文件/目录管理** | 创建、重命名、复制、移动、删除、读取、保存;编码与行尾原样保留 |
+| **全局搜索** | 子串大小写不敏感,跨目录递归定位 |
+| **Git 集成** | `status / diff / stage / unstage / discard / commit / push` |
+| **SSH 远程会话** | 多会话管理、远程列目录、远端执行;主机指纹 TOFU 校验 |
+| **本地终端** | 超时后按进程组杀干净;输出按 utf-8 → locale 顺序解码 |
+| **Diff 审查** | `edit_file` 的改动先进内存,用户点「应用」才落盘,落盘前校验文件有没有被外部改过 |
+| **SSE 流式输出** | 边想边推,前端实时显示「第 N 轮 / 调用工具 X / 工具返回」 |
+| **会话隔离** | `X-CodeForge-Session` 按标签页隔离 history / 审批 / diff,互不干扰 |
+| **一键启动** | `start.sh` / `start.ps1` 自动建 venv、装依赖、检测端口、带 token 开浏览器 |
 
 ---
 
