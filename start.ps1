@@ -33,7 +33,11 @@ param(
     [switch]$Update,
     [switch]$Dev,
     [switch]$Console,
-    [switch]$Help
+    [switch]$Help,
+    [switch]$Stop,
+    [switch]$Restart,
+    [switch]$Status,
+    [string]$Action = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,10 +52,80 @@ try {
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location -LiteralPath $ScriptDir
 
+# 兼容位置参数：.\start.ps1 stop / start / restart / status / foreground
+if ($Action -and -not $Stop -and -not $Restart -and -not $Status -and -not $Help) {
+    switch ($Action.ToLower()) {
+        "stop"     { $Stop = $true }
+        "restart"  { $Restart = $true }
+        "status"   { $Status = $true }
+        "start"    { }
+        "foreground" { $Console = $true }
+        default    { Write-Host "[start.ps1] 未知动作: $Action (可用: start|stop|restart|status)" -ForegroundColor Yellow }
+    }
+}
+# 兼容 --stop 这类传进来的剩余参数
+foreach ($a in $args) {
+    switch ($a.ToLower()) {
+        "--stop"    { $Stop = $true }
+        "--restart" { $Restart = $true }
+        "--status"  { $Status = $true }
+        "--foreground" { $Console = $true }
+    }
+}
+
+$pidFile = Join-Path $ScriptDir "log\server.pid"
+$logDir  = Join-Path $ScriptDir "log"
+
+function Get-ServerPid {
+    # 优先读 pid 文件
+    if (Test-Path -LiteralPath $pidFile) {
+        try { $id = [int]((Get-Content -LiteralPath $pidFile -TotalCount 1).Trim()); if ($id -gt 0) { $p = Get-Process -Id $id -ErrorAction SilentlyContinue; if ($p) { return $id } } } catch {}
+    }
+    # 回退：按端口找 LISTEN 进程
+    try {
+        $c = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($c) { return $c.OwningProcess }
+    } catch {}
+    return $null
+}
+function Show-Status {
+    $pidFound = Get-ServerPid
+    if ($pidFound) {
+        try { $p = Get-Process -Id $pidFound -ErrorAction Stop; Write-Host "[start.ps1] running  pid=$pidFound  port=$Port  cmd=$($p.ProcessName)" -ForegroundColor Green }
+        catch { Write-Host "[start.ps1] pid file points to $pidFound but process not found" -ForegroundColor Yellow }
+        try { $conn = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue; if ($conn) { Write-Host "[start.ps1] port $Port listening" } } catch {}
+    } else {
+        Write-Host "[start.ps1] not running  port=$Port" -ForegroundColor Yellow
+    }
+}
+function Stop-Server {
+    $pidFound = Get-ServerPid
+    if (-not $pidFound) { Write-Host "[start.ps1] no running service on port $Port" -ForegroundColor Yellow; return }
+    Write-Host "[start.ps1] stopping  pid=$pidFound  port=$Port ..."
+    try { Stop-Process -Id $pidFound -Force -ErrorAction Stop; Write-Host "[start.ps1] stop signal sent" -ForegroundColor Green } catch { Write-Host "[start.ps1] stop failed: $_" -ForegroundColor Red; return }
+    for ($i=0; $i -lt 15; $i++) {
+        Start-Sleep -Milliseconds 400
+        $still = Get-ServerPid
+        if (-not $still) { break }
+    }
+    if (Test-Path -LiteralPath $pidFile) { Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue }
+    $still = Get-ServerPid
+    if ($still) { Write-Host "[start.ps1] process $still still alive, kill manually" -ForegroundColor Red } else { Write-Host "[start.ps1] stopped" -ForegroundColor Green }
+}
+
 if ($Help) {
+    Write-Host "Usage: .\start.ps1 [start|stop|restart|status] [-Port 9191] [-ListenHost 127.0.0.1] [-NoBrowser] [-Dev] [-Console/-Foreground]"
+    Write-Host "  start      start and hang in foreground (default, Ctrl+C to stop)"
+    Write-Host "  stop       stop service on port $Port (via log\server.pid)"
+    Write-Host "  restart    stop then start"
+    Write-Host "  status     show running status"
+    Write-Host "  --foreground / -Console  log to console, not to file"
     Get-Help $MyInvocation.MyCommand.Path -Detailed | Out-String
     exit 0
 }
+if ($Status) { Show-Status; exit 0 }
+if ($Stop -and -not $Restart) { Stop-Server; exit 0 }
+if ($Restart) { Stop-Server; Start-Sleep -Seconds 1; Write-Host "[start.ps1] restarting..." }
 
 Write-Host "[start.ps1] platform = windows  (cwd: $ScriptDir)"
 
@@ -217,7 +291,7 @@ if (-not $NoBrowser) {
 # ----------- Logs: everything under log\, same as start.sh -----------
 # Windows redirection cannot append the way start.sh does, so the previous run
 # is rotated to server.prev.log / server.err.prev.log instead of being dropped.
-$logDir = Join-Path $ScriptDir "log"
+# $logDir 已在顶部定义（如 stop/status 已用），这里复用
 if (-not (Test-Path -LiteralPath $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
 
 foreach ($name in @("server.log", "server.err.log")) {
@@ -244,17 +318,30 @@ $pyArgs = @("--host", $ListenHost, "--port", $Port)
 if ($Dev) { $pyArgs += "--debug" }
 
 if ($Console) {
+    Write-Host "[start.ps1] foreground, Ctrl+C to stop ..."
     & python $pyFile $pyArgs
     exit $LASTEXITCODE
 }
 
 Write-Host "[start.ps1] stdout -> $logOut"
 Write-Host "[start.ps1] stderr -> $logErr"
+Write-Host "[start.ps1] foreground hanging, Ctrl+C to stop (or run .\start.ps1 stop in another window)"
 
-# -NoNewWindow keeps the child on this console, so Ctrl+C still reaches main.py
-# and it can shut down the same way it does under start.sh.
+# foreground but killable via stop: start child, write pid, then Wait
 $pyExe = (Get-Command python).Source
 $proc  = Start-Process -FilePath $pyExe -ArgumentList (@($pyFile) + $pyArgs) `
-                       -NoNewWindow -Wait -PassThru `
+                       -NoNewWindow -PassThru `
                        -RedirectStandardOutput $logOut -RedirectStandardError $logErr
-exit $proc.ExitCode
+try {
+    Set-Content -LiteralPath $pidFile -Value $proc.Id -Encoding ascii
+    # 等待子进程退出（Ctrl+C 会转发到子进程）
+    $proc.WaitForExit()
+    exit $proc.ExitCode
+} finally {
+    if (Test-Path -LiteralPath $pidFile) {
+        try {
+            $saved = (Get-Content -LiteralPath $pidFile -TotalCount 1 -ErrorAction SilentlyContinue).Trim()
+            if ($saved -eq "$($proc.Id)") { Remove-Item -LiteralPath $pidFile -Force -ErrorAction SilentlyContinue }
+        } catch {}
+    }
+}

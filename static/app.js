@@ -4493,12 +4493,137 @@
       if (!btn) return;
       applyTheme(btn.dataset.theme);
     });
-    // 初始化:localStorage > 默认 dark
-    let saved = 'dark';
-    try { saved = localStorage.getItem(THEME_KEY) || 'dark'; } catch (e) {}
-    if (!['dark', 'light', 'blue'].includes(saved)) saved = 'dark';
+    // 初始化:localStorage > 默认 light(白色)
+    let saved = 'light';
+    try { saved = localStorage.getItem(THEME_KEY) || 'light'; } catch (e) {}
+    if (!['dark', 'light', 'blue'].includes(saved)) saved = 'light';
     applyTheme(saved);
   }
+
+  // ============ 02 · 底抽屉竖屏 + 调试切换 ============
+  (function initPortrait(){
+    const KEY = 'codeforge:portrait';
+    const btn = document.getElementById('portrait-toggle');
+    const right = document.querySelector('.right');
+    const sidebar = document.querySelector('.sidebar');
+    const main = document.querySelector('.main');
+    if(!btn || !right || !main) return;
+    // 创建遮罩
+    let backdrop = document.querySelector('.portrait-backdrop');
+    if(!backdrop){
+      backdrop = document.createElement('div');
+      backdrop.className = 'portrait-backdrop';
+      backdrop.style.display='none';
+      main.appendChild(backdrop);
+      backdrop.addEventListener('click', ()=>{ if(sidebar) sidebar.classList.remove('portrait-open'); backdrop.style.display='none'; });
+    }
+    // 侧边栏图标在竖屏时点击应打开覆盖式侧边栏
+    const explorerIcon = document.querySelector('.sidebar-icons [data-target=".sidebar"]');
+    if(explorerIcon){
+      explorerIcon.addEventListener('click', (e)=>{
+        const isPortrait = document.body.classList.contains('portrait-active') || window.matchMedia('(max-width: 768px)').matches || window.matchMedia('(orientation: portrait)').matches;
+        if(!isPortrait) return; // 横屏走原有逻辑
+        e.preventDefault(); e.stopPropagation();
+        const willOpen = !sidebar.classList.contains('portrait-open');
+        if(willOpen){ sidebar.classList.remove('collapsed'); sidebar.classList.add('portrait-open'); backdrop.style.display=''; }
+        else { sidebar.classList.remove('portrait-open'); backdrop.style.display='none'; }
+      }, true);
+    }
+
+    function isForcedPortrait(){ try{ return localStorage.getItem(KEY)==='1'; }catch(e){ return false; } }
+    function apply(force){
+      const want = force!==undefined ? force : isForcedPortrait();
+      // 媒体查询的自然竖屏在CSS中已处理，这里只处理“横屏强制竖屏”调试态
+      document.body.classList.toggle('portrait-active', !!want);
+      btn.classList.toggle('active', !!want);
+      btn.querySelector('.portrait-toggle-text').textContent = want ? '横屏' : '竖屏';
+      btn.title = want ? '切回横屏（调试）' : '切换竖屏（调试）';
+      // 同步抽屉状态：切回横屏时关掉覆盖层
+      if(!want && sidebar){ sidebar.classList.remove('portrait-open'); backdrop.style.display='none'; }
+      // 初始化sheet高度
+      if(right && !right.style.getPropertyValue('--sheet-h')) setSheet('peek');
+    }
+    // sheet 三态
+    function setSheet(state){
+      if(!right) return;
+      right.classList.remove('sheet-peek','sheet-half','sheet-full','sheet-dragging');
+      let h='';
+      if(state==='peek') h='var(--sheet-peek)';
+      else if(state==='half') h='var(--sheet-half)';
+      else if(state==='full') h='var(--sheet-full)';
+      else h=state; // 直接px值
+      right.style.setProperty('--sheet-h', h);
+      right.classList.add('sheet-'+(state==='peek'||state==='half'||state==='full'?state:'peek'));
+      // 同步center的padding-bottom
+      const center = document.querySelector('.center');
+      if(center) center.style.paddingBottom = h.includes('var') ? '86px' : h;
+    }
+    // 拖拽把手（.right::before 只是视觉，实际拖拽区为 .right 顶部20px）
+    let drag = null;
+    function onStart(e){
+      const isPortrait = document.body.classList.contains('portrait-active') || window.innerWidth<=768 || window.matchMedia('(orientation: portrait)').matches;
+      if(!isPortrait) return;
+      const y = e.touches ? e.touches[0].clientY : e.clientY;
+      // 仅顶部20px可拖
+      const rect = right.getBoundingClientRect();
+      if(y - rect.top > 28) return;
+      drag = { startY: y, startH: rect.height };
+      right.classList.add('sheet-dragging');
+      e.preventDefault();
+    }
+    function onMove(e){
+      if(!drag) return;
+      const y = e.touches ? e.touches[0].clientY : e.clientY;
+      const dh = drag.startY - y;
+      let nh = drag.startH + dh;
+      const vh = window.innerHeight;
+      nh = Math.max(86, Math.min(vh*0.88, nh));
+      right.style.setProperty('--sheet-h', nh+'px');
+      const center=document.querySelector('.center'); if(center) center.style.paddingBottom = nh+'px';
+    }
+    function onEnd(){
+      if(!drag) return;
+      right.classList.remove('sheet-dragging');
+      const h = right.getBoundingClientRect().height;
+      const vh = window.innerHeight;
+      // 吸附
+      if(h < vh*0.25) setSheet('peek');
+      else if(h < vh*0.68) setSheet('half');
+      else setSheet('full');
+      drag=null;
+    }
+    right.addEventListener('mousedown', onStart);
+    right.addEventListener('touchstart', onStart, {passive:false});
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('touchmove', onMove, {passive:false});
+    window.addEventListener('mouseup', onEnd);
+    window.addEventListener('touchend', onEnd);
+    // 双击把手切换
+    right.addEventListener('dblclick', (e)=>{
+      const rect = right.getBoundingClientRect();
+      if(e.clientY - rect.top > 28) return;
+      const cur = right.classList.contains('sheet-peek') ? 'half' : right.classList.contains('sheet-half') ? 'full' : 'peek';
+      setSheet(cur);
+    });
+    // 按钮切换
+    btn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      const next = !document.body.classList.contains('portrait-active');
+      try{ localStorage.setItem(KEY, next?'1':'0'); }catch(e){}
+      apply(next);
+    });
+    // 初始化
+    apply();
+    // 监听窗口尺寸：自然竖屏时CSS已生效，但需同步center padding
+    window.addEventListener('resize', ()=>{
+      if(!document.body.classList.contains('portrait-active') && window.innerWidth>768 && !window.matchMedia('(orientation: portrait)').matches){
+        // 回横屏时清理
+        const c=document.querySelector('.center'); if(c) c.style.paddingBottom='';
+      }
+    });
+    // 暴露给控制台调试
+    window.__portrait = { setSheet, apply };
+  })();
 
   // ── 恢复上次的工作目录(localStorage) ──
   // 失败(目录被删/无权限)时 openFolder 会清掉过期缓存

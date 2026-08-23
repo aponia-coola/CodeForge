@@ -237,6 +237,32 @@ body {
   transform: translateY(-50%);
 }
 
+/* 竖屏调试切换按钮：紧贴工具调用右侧，横屏也可见 */
+.portrait-toggle {
+  position: absolute;
+  left: 150px; /* 70 + 工具按钮宽度 (~72) + 8gap */
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-soft);
+  color: var(--text-muted);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background var(--t-fast), color var(--t-fast), border-color var(--t-fast);
+  z-index: 51;
+}
+.portrait-toggle:hover { background: var(--bg-hover); color: var(--text); border-color: var(--border); }
+.portrait-toggle.active { background: var(--c-purple); color: #fff; border-color: var(--c-purple); }
+.portrait-toggle svg { display:block; flex-shrink:0; }
+@media (max-width: 900px) {
+  .portrait-toggle .portrait-toggle-text { display:none; }
+}
+
 /* Plan/Tool 开关:放在主题切换按钮左边 */
 .topbar-toggles {
   position: absolute;
@@ -3258,3 +3284,214 @@ body.resizing, body.resizing * {
   gap: 8px;
   margin-top: 10px;
 }
+
+/* ════════════════════════════════════════════════════════════
+   02 · 底抽屉 BottomSheet（竖屏）+ 强制竖屏调试
+   触发：媒体查询 (max-width:768px) 或 (orientation:portrait)
+        或 body.portrait-active（横屏点顶栏📱按钮强制）
+   布局：topbar不变，.main纵向，.center全屏，.right变BottomSheet
+   抽屉三态：peek 86px / half 50vh / full 88vh，可拖拽
+   ════════════════════════════════════════════════════════════ */
+:root {
+  --sheet-peek: 86px;
+  --sheet-half: 50vh;
+  --sheet-full: 88vh;
+}
+
+/* 强制竖屏时的底抽样式（与媒体查询共用同一套） */
+body.portrait-active .main,
+@media (max-width: 768px), (orientation: portrait) {
+  /* 主体纵向 */
+  .main { flex-direction: column; height: calc(100vh - 36px); overflow: hidden; position: relative; }
+  /* 图标栏变底栏 */
+  .sidebar-icons {
+    order: 20;
+    flex-direction: row;
+    width: 100% !important;
+    height: 48px;
+    min-height: 48px;
+    border-right: none;
+    border-top: 1px solid var(--border-soft);
+    justify-content: space-around;
+    padding: 0;
+    gap: 0;
+    flex-shrink: 0;
+  }
+  .sidebar-icons div { width: 44px; height: 36px; }
+  .sidebar-icons div.active::before {
+    left: 6px; right: 6px; top: auto; bottom: 0;
+    width: auto; height: 2px;
+    border-radius: 2px 2px 0 0;
+  }
+  /* 拖拽手柄隐藏，竖屏由bottom sheet接管 */
+  .resize-handle { display: none !important; }
+  /* 侧边栏变为覆盖式抽屉（默认隐藏，.open时滑入） */
+  .sidebar {
+    position: absolute;
+    left: 0; right: 0; top: 0;
+    bottom: 48px;
+    width: 100% !important;
+    z-index: 25;
+    transform: translateY(-100%);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform .28s cubic-bezier(.4,0,.2,1), opacity .2s;
+    border-right: none;
+    border-bottom: 1px solid var(--border-soft);
+    box-shadow: 0 12px 30px rgba(0,0,0,.4);
+  }
+  .sidebar.portrait-open {
+    transform: translateY(0);
+    opacity: 1;
+    pointer-events: auto;
+  }
+  /* 中间编辑区占满剩余（扣除bottom sheet peek） */
+  .center {
+    flex: 1;
+    min-height: 0;
+    padding-bottom: var(--sheet-peek);
+    align-items: stretch;
+    justify-content: flex-start;
+  }
+  .center.diff-mode, .center.editor-mode { padding-bottom: var(--sheet-peek); }
+  /* 右侧变 BottomSheet */
+  .right {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    width: 100% !important;
+    height: var(--sheet-h, var(--sheet-peek));
+    max-height: var(--sheet-full);
+    min-height: var(--sheet-peek);
+    border-left: none;
+    border-top: 1px solid var(--border-strong);
+    border-radius: 18px 18px 0 0;
+    z-index: 30;
+    box-shadow: var(--shadow-md);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    transition: height .28s cubic-bezier(.4,0,.2,1);
+    background: var(--bg-panel);
+  }
+  .right .ai-panel { min-height: 0; }
+  /* 抽屉把手 */
+  .right::before {
+    content: "";
+    width: 36px; height: 4px;
+    background: var(--border-strong);
+    border-radius: 999px;
+    position: absolute;
+    top: 8px; left: 50%; transform: translateX(-50%);
+    z-index: 2;
+  }
+  /* 拖拽时禁用过渡，跟手 */
+  .right.sheet-dragging { transition: none !important; }
+  /* peek时隐藏终端，half/full再显示 */
+  .right.sheet-peek .terminal { display: none; }
+  .right.sheet-half .terminal, .right.sheet-full .terminal { display: flex; }
+  /* 半屏/全屏时让消息区可滚 */
+  .right.sheet-peek .ai-messages { overflow: hidden; }
+  /* 侧边栏打开时的遮罩 */
+  .portrait-backdrop {
+    position: absolute;
+    inset: 0;
+    bottom: 48px;
+    background: rgba(0,0,0,.45);
+    z-index: 24;
+    backdrop-filter: blur(2px);
+  }
+}
+
+/* 强制竖屏类也需在桌面生效（提高优先级） */
+body.portrait-active .right { position: fixed !important; }
+body.portrait-active .main { flex-direction: column !important; }
+body.portrait-active .sidebar-icons { display: flex !important; }
+
+/* 横屏调试按钮在竖屏时高亮提示 */
+body.portrait-active .portrait-toggle { background: var(--c-purple); color:#fff; border-color: var(--c-purple); }
+
+/* ════════════════════════════════════════════════════════════
+               圆润化：整体加大圆角，柔化棱角
+   统一用变量定义各层级圆角，末块覆盖让所有组件更圆润。
+   ════════════════════════════════════════════════════════════ */
+:root {
+  --r-sm: 8px;    /* 小控件/图标/状态徽章 */
+  --r-md: 10px;   /* 面板/卡片/气泡 */
+  --r-lg: 14px;   /* 大容器/编辑器/终端 */
+  --r-xl: 18px;   /* 极端容器/modal/抽屉 */
+}
+
+/* 小控件：按钮、tab、输入框、搜索、开关 */
+.tool-panel-toggle,
+.portrait-toggle,
+.theme-btn,
+.send-btn,
+.empty-btn,
+.patch-btn,
+.editor-save-btn,
+.editor-find-btn,
+.editor-find input,
+.editor-find button,
+.msg-bubble .copy-btn-pre,
+.msg-bubble .copy-btn-block,
+.term-actions span,
+.scm-commit-actions button,
+.scm-file-actions span,
+.file-icon,
+.kbd { border-radius: var(--r-sm); }
+
+/* 中等：下拉、弹窗、工具面板、模型菜单、右键菜单、表格 */
+.model-menu,
+.tool-panel-body,
+.quickopen-box,
+.ctx-menu,
+.modal-box,
+.token-box,
+.ssh-hostkey,
+.msg-bubble,
+.term-tab,
+.editor-tab,
+.diff-tab,
+.diff-restore-btn,
+.search-input,
+.scm-commit-box textarea,
+.editor-find,
+.input,
+.term-input,
+.ai-input,
+.empty-btn,
+.sidebar-confirm-btn { border-radius: var(--r-md); }
+
+/* 大容器：编辑器、终端、侧栏、抽屉 */
+.center,
+.editor-host,
+.editor-header,
+.editor-content,
+.editor-cm-host .CodeMirror,
+.terminal,
+.term-body,
+.ai-panel,
+.ai-header,
+.ai-messages,
+.ai-input-wrap,
+.sidebar,
+.explorer,
+.explorer-input-row,
+.diff-viewer,
+.diff-tabs,
+.diff-body,
+.editor-tabs,
+.scm-view,
+.scm-changes,
+.search-view,
+.search-results { border-radius: var(--r-lg); }
+
+/* 编辑器正文圆整 */
+.editor-cm-host { border-radius: var(--r-xl); }
+
+/* 横屏右栏是贴边全高面板，不能加圆角（会露左右边缝）；竖屏抽屉的圆角在媒体查询里单独给 */
+.right { border-radius: 0; }
+body.portrait-active .right { border-radius: var(--r-xl) var(--r-xl) 0 0; }
+
+/* 主题切换保留较圆 */
+.theme-switch { border-radius: 14px; }

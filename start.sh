@@ -3,13 +3,17 @@
 #  CodeForge 一键启动脚本  (Linux / macOS / Termux;Windows 用户请用 start.ps1)
 # ----------------------------------------------------------------------------
 #  用法:
-#    ./start.sh                       默认 (host=127.0.0.1 port=9191 自动开浏览器)
+#    ./start.sh                       默认 (host=127.0.0.1 port=9191 自动开浏览器，前台挂起)
 #    ./start.sh --port 8080           自定义端口
 #    ./start.sh --host 0.0.0.0        监听所有网卡(局域网可见,会打印风险提示)
 #    ./start.sh --no-browser          不自动开浏览器
 #    ./start.sh --rebuild             强制重建 .venv
 #    ./start.sh --update              只更新 pip 依赖,不动 venv
 #    ./start.sh --dev                 开发模式 (启用 Flask debug)
+#    ./start.sh start                 启动并前台挂起（默认，Ctrl+C 停止）
+#    ./start.sh stop                  停止占用端口的服务
+#    ./start.sh restart               重启
+#    ./start.sh status                查看是否运行
 #    ./start.sh --help                帮助
 #
 #  认证:
@@ -32,6 +36,12 @@ OPEN_BROWSER=1
 REBUILD=0
 UPDATE_ONLY=0
 DEV_MODE=0
+DO_STOP=0
+DO_RESTART=0
+DO_STATUS=0
+ACTION=""
+PID_FILE="$SCRIPT_DIR/log/server.pid"
+LOG_DIR="$SCRIPT_DIR/log"
 
 # ----------- 解析参数 -----------
 while [[ $# -gt 0 ]]; do
@@ -42,8 +52,13 @@ while [[ $# -gt 0 ]]; do
         --rebuild)     REBUILD=1;        shift   ;;
         --update)      UPDATE_ONLY=1;    shift   ;;
         --dev)         DEV_MODE=1;       shift   ;;
+        start)         ACTION="start";   shift   ;;
+        stop|--stop)   DO_STOP=1;        shift   ;;
+        restart|--restart) DO_RESTART=1; shift   ;;
+        status|--status) DO_STATUS=1;    shift   ;;
+        --foreground|--console) DEV_MODE="$DEV_MODE"; shift ;; # 兼容前台
         -h|--help)
-            sed -n '2,21p' "$0"
+            sed -n '2,27p' "$0"
             exit 0
             ;;
         *)
@@ -52,6 +67,38 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+# 兼容位置参数 restart/stop/status 优先
+PID_FILE="$SCRIPT_DIR/log/server.pid"
+LOG_DIR="$SCRIPT_DIR/log"
+get_pid() {
+    if [[ -f "$PID_FILE" ]]; then
+        local pid; pid="$(head -n 1 "$PID_FILE" 2>/dev/null | tr -d ' \r\n')"
+        if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then echo "$pid"; return 0; fi
+    fi
+    # 回退：按端口找
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -ti :"$PORT" 2>/dev/null | head -n 1
+    elif command -v ss >/dev/null 2>&1; then
+        ss -lptn "sport = :$PORT" 2>/dev/null | grep -o 'pid=[0-9]*' | head -n1 | cut -d= -f2
+    fi
+}
+show_status() {
+    local pid; pid="$(get_pid)"
+    if [[ -n "$pid" ]]; then echo "[start.sh] 运行中  pid=$pid  port=$PORT"; else echo "[start.sh] 未运行  port=$PORT"; fi
+}
+stop_server() {
+    local pid; pid="$(get_pid)"
+    if [[ -z "$pid" ]]; then echo "[start.sh] 未发现运行中的服务 (port $PORT)"; return 0; fi
+    echo "[start.sh] 停止  pid=$pid  port=$PORT ..."
+    kill "$pid" 2>/dev/null || true
+    for i in {1..15}; do sleep 0.4; if ! kill -0 "$pid" 2>/dev/null; then break; fi; done
+    if kill -0 "$pid" 2>/dev/null; then echo "[start.sh] 进程 $pid 仍在，尝试 kill -9"; kill -9 "$pid" 2>/dev/null || true; fi
+    rm -f "$PID_FILE"
+    pid="$(get_pid)"; if [[ -z "$pid" ]]; then echo "[start.sh] 已停止"; else echo "[start.sh] 仍有进程 $pid"; fi
+}
+if [[ $DO_STATUS -eq 1 ]]; then show_status; exit 0; fi
+if [[ $DO_STOP -eq 1 && $DO_RESTART -eq 0 ]]; then stop_server; exit 0; fi
+if [[ $DO_RESTART -eq 1 ]]; then stop_server; sleep 1; echo "[start.sh] 重启中..."; fi
 
 # ----------- 平台检测 -----------
 detect_platform() {
@@ -253,7 +300,7 @@ echo "  CodeForge  平台=$PLATFORM  绑定=$HOST:$PORT"
 echo "  浏览器:    $URL"
 echo "  token :    $CODEFORGE_TOKEN"
 echo "  来源  :    $TOKEN_SOURCE"
-echo "  停止  :    Ctrl + C"
+echo "  Stop   :    Ctrl + C  or ./start.sh stop in another terminal"
 if ! is_loopback "$HOST"; then
     echo "------------------------------------------------------------"
     echo "  [!] 正在绑定非回环地址 $HOST,局域网内任意设备都能连到本服务。"
@@ -273,7 +320,6 @@ ARGS=(--host "$HOST" --port "$PORT")
 [[ $DEV_MODE -eq 1 ]] && ARGS+=(--debug)
 
 # ----------- 日志:统一输出到 log/ 目录 -----------
-LOG_DIR="$SCRIPT_DIR/log"
 mkdir -p "$LOG_DIR"
 # 把历史可能落在根目录的 server.log / server.err.log 迁到 log/(首次迁移,不删除,留底)
 for name in server.log server.err.log; do
@@ -286,6 +332,10 @@ LOG_OUT="$LOG_DIR/server.log"
 LOG_ERR="$LOG_DIR/server.err.log"
 echo "[start.sh] stdout -> $LOG_OUT"
 echo "[start.sh] stderr -> $LOG_ERR"
+echo "[start.sh] foreground hanging, Ctrl+C to stop (or ./start.sh stop in another terminal)"
+echo "$PID" > "$PID_FILE" 2>/dev/null || true
+# 退出时清 pid（exec 后 PID 不变，stop 按此文件杀）
+trap 'rm -f "$PID_FILE" 2>/dev/null' EXIT INT TERM
 
 # exec 让 main.py 接收 SIGINT 优雅退出;stdout/stderr 各自追加重定向到 log/
 exec python "$SCRIPT_DIR/main.py" "${ARGS[@]}" >>"$LOG_OUT" 2>>"$LOG_ERR"

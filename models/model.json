@@ -1,0 +1,19 @@
+{
+  "current_model": "deepseek-v4-flash",
+  "availableModels": [
+    "deepseek-v4-flash"
+  ],
+  "models": [
+    {
+      "id": "deepseek-v4-flash",
+      "name": "Deepseek v4 flash",
+      "vendor": "example",
+      "url": "https://api.deepseek.com/",
+      "apiKeyEnv": "CODEFORGE_EXAMPLE_KEY",
+      "apiKey": "sk-ef0e53eb94a74e63b547cb21d9ba34f8",
+      "maxInputTokens": 1000000,
+      "maxOutputTokens": 384000,
+      "supportsToolCall": true
+    }
+  ]
+}
