@@ -10,7 +10,10 @@ cd "$SCRIPT_DIR"
 log() { printf '[deploy_termux.sh] %s\n' "$*"; }
 die() { printf '[deploy_termux.sh] 错误：%s\n' "$*" >&2; exit 1; }
 
-uname -o 2>/dev/null | grep -qi termux || die "此脚本只能在 Termux 中运行"
+UNAME_ALL="$(uname -a 2>/dev/null || true)"
+UNAME_OS="$(uname -o 2>/dev/null || true)"
+printf '%s\n%s\n' "$UNAME_ALL" "$UNAME_OS" |
+    grep -Eqi '(termux|android)' || die "此脚本只能在 Termux 中运行"
 
 # Android 共享存储经常不支持符号链接和完整的 Unix 权限。
 if pwd | grep -E '(/storage/|/sdcard/)' >/dev/null 2>&1; then
