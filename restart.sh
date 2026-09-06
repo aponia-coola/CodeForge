@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
 # CodeForge 一键启动脚本
-# Linux / macOS / Termux
+# Linux / macOS / Termux (use deploy_termux.sh for Termux setup)
 # ============================================================================
 
 set -e
@@ -285,37 +285,6 @@ echo "[restart.sh] platform = $PLATFORM"
 echo "[restart.sh] cwd      = $SCRIPT_DIR"
 
 # ============================================================================
-# 共享存储检测
-# ============================================================================
-
-on_shared_storage=0
-
-if [[ "$SCRIPT_DIR" == *"/storage/"* ]] ||
-   [[ "$SCRIPT_DIR" == /sdcard/* ]] ||
-   [[ "$SCRIPT_DIR" == *"/sdcard/"* ]] ||
-   [[ "$SCRIPT_DIR" == *"/storage/shared/"* ]]; then
-
-    on_shared_storage=1
-
-    echo
-    echo "[restart.sh] 警告：项目位于 Android 共享存储"
-    echo "[restart.sh] 路径：$SCRIPT_DIR"
-    echo
-    echo "共享存储通常不支持符号链接。"
-    echo "建议把项目放到 Termux 私有目录，例如："
-    echo
-    echo "  ~/codeforge"
-    echo
-
-    if [[ $NO_SYMLINKS -ne 1 ]]; then
-        read -r -p "[restart.sh] 仍要继续吗? [y/N] " _ans
-        [[ "$_ans" =~ ^[Yy]$ ]] || exit 1
-
-        NO_SYMLINKS=1
-    fi
-fi
-
-# ============================================================================
 # Python 检测
 # ============================================================================
 
@@ -343,7 +312,7 @@ find_python() {
 
     done
 
-    # Termux 常见路径
+    # 常见系统路径
     for p in \
         /data/data/com.termux/files/usr/bin/python3 \
         /data/data/com.termux/files/usr/bin/python \
@@ -371,14 +340,6 @@ if ! find_python; then
     echo
     echo "[restart.sh] 错误：找不到 Python"
     echo
-
-    if [[ "$PLATFORM" == "termux" ]]; then
-        echo "请执行："
-        echo
-        echo "  pkg update"
-        echo "  pkg install python"
-        echo
-    fi
 
     exit 1
 fi
@@ -456,47 +417,14 @@ if [[ $venv_ok -eq 0 ]]; then
 
     echo "[restart.sh] 创建 Python venv ..."
 
-    # Termux / 共享存储
-    if [[ "$PLATFORM" == "termux" ]] ||
-       [[ $NO_SYMLINKS -eq 1 ]]; then
-
-        echo "[restart.sh] 使用 --copies 创建 venv ..."
-
-        if ! "$PY" -m venv --copies "$VENV_DIR"; then
-
-            echo
+    if ! "$PY" -m venv "$VENV_DIR" 2>"$SCRIPT_DIR/.venv_err"; then
+        echo "[restart.sh] venv 默认模式失败，自动切换 --copies ..."
+        rm -rf "$VENV_DIR"
+        "$PY" -m venv --copies "$VENV_DIR" || {
             echo "[restart.sh] venv 创建失败"
-            echo
-            echo "尝试安装 python-venv / ensurepip ..."
-            echo
-
-            "$PY" -m ensurepip --upgrade || true
-
-            rm -rf "$VENV_DIR"
-
-            "$PY" -m venv --copies "$VENV_DIR" || {
-                echo "[restart.sh] 无法创建 venv"
-                exit 1
-            }
-        fi
-
-    else
-
-        # 普通 Linux/macOS
-        if ! "$PY" -m venv "$VENV_DIR" 2>"$SCRIPT_DIR/.venv_err"; then
-
-            echo "[restart.sh] venv 默认模式失败"
-            echo "[restart.sh] 自动切换 --copies ..."
-
-            rm -rf "$VENV_DIR"
-
-            "$PY" -m venv --copies "$VENV_DIR" || {
-                echo "[restart.sh] venv 创建失败"
-                echo "[restart.sh] 错误日志：$SCRIPT_DIR/.venv_err"
-                exit 1
-            }
-        fi
-
+            echo "[restart.sh] 错误日志：$SCRIPT_DIR/.venv_err"
+            exit 1
+        }
     fi
 fi
 
@@ -616,11 +544,7 @@ fi
 #   - 每个依赖独立 pip install
 #   - 单个失败不会阻塞其它依赖
 #
-# 不再：
-#   - 特殊跳过 jiter
-#   - 手动安装 openai
-#   - Rust 特判
-#   - cryptography 特判
+# Termux 的特殊依赖策略由 deploy_termux.sh 负责。
 # ============================================================================
 
 install_dependencies_fallback() {
