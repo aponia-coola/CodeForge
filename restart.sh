@@ -284,6 +284,19 @@ PLATFORM="$(detect_platform)"
 echo "[restart.sh] platform = $PLATFORM"
 echo "[restart.sh] cwd      = $SCRIPT_DIR"
 
+# Android 共享存储不支持 venv 所需的符号链接。
+# Termux 部署应先通过 deploy_termux.sh 迁移到 ~/codeforge。
+if [[ "$PLATFORM" == "termux" ]] &&
+   pwd | grep -E '(/storage/|/sdcard/)' >/dev/null 2>&1; then
+    echo
+    echo "[restart.sh] 错误：当前项目位于 Android 共享存储，无法创建 venv"
+    echo "[restart.sh] 请先执行："
+    echo "  bash ./deploy_termux.sh"
+    echo "然后从私有目录启动："
+    echo "  cd \"$HOME/codeforge\" && bash ./restart.sh"
+    exit 1
+fi
+
 # ============================================================================
 # Python 检测
 # ============================================================================
