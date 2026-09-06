@@ -201,16 +201,31 @@ find_python() {
     fi
     # 再查系统 PATH
     if [[ -z "$PY" ]]; then
-        # Termux 只装 python3,没有 python 软链;直接命中,跳过逐个探测以免误判
-        if [[ "$PLATFORM" == "termux" ]] && command -v python3 >/dev/null 2>&1; then
-            PY="$(command -v python3)"; return 0
-        fi
-        # Termux 常见 python 路径兜底
-        for p in /data/data/com.termux/files/usr/bin/python3 /usr/bin/python3; do
-            [[ -x "$p" ]] && PY="$p" && return 0
+        # Termux 显式路径兜底（最常见位置）
+        for p in /data/data/com.termux/files/usr/bin/python3 \
+                 /data/data/com.termux/files/usr/bin/python \
+                 /system/bin/python3 \
+                 /system/bin/python \
+                 /usr/bin/python3 \
+                 /usr/bin/python; do
+            if [[ -x "$p" ]]; then
+                PY="$p"
+                echo "[restart.sh] found python at: $PY" >&2
+                return 0
+            fi
         done
-        for c in python3.12 python3.11 python3.10 python3 python; do
-            if command -v "$c" >/dev/null 2>&1; then PY="$(command -v "$c")"; return 0; fi
+        # 再试 command -v 和常见命令名
+        if [[ "$PLATFORM" == "termux" ]] && command -v python3 >/dev/null 2>&1; then
+            PY="$(command -v python3)"
+            echo "[restart.sh] found python via command -v: $PY" >&2
+            return 0
+        fi
+        for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3 python; do
+            if command -v "$c" >/dev/null 2>&1; then
+                PY="$(command -v "$c")"
+                echo "[restart.sh] found python via command -v $c: $PY" >&2
+                return 0
+            fi
         done
     fi
     return 1
