@@ -205,7 +205,7 @@ find_python() {
         for c in python3 python; do
             if PY=$(command -v "$c" 2>/dev/null); then
                 if "$PY" --version >/dev/null 2>&1; then
-                    echo "[restart.sh] found python: $PY" >&2
+                    echo "[restart.sh] python: $PY" >&2
                     return 0
                 fi
             fi
@@ -217,15 +217,15 @@ find_python() {
                  /usr/bin/python3; do
             if [[ -x "$p" ]] && "$p" --version >/dev/null 2>&1; then
                 PY="$p"
-                echo "[restart.sh] found python at: $PY" >&2
+                echo "[restart.sh] python: $PY" >&2
                 return 0
             fi
         done
     fi
     return 1
 }
-find_python || { echo "[restart.sh] 找不到 python,请先安装 Python 3.10+" >&2; exit 1; }
-echo "[restart.sh] python  = $PY"
+find_python || { echo "[restart.sh] 找不到 python，请先安装 Python 3.10+" >&2; exit 1; }
+echo "[restart.sh] python = $PY"
 
 # ----------- venv 路径 -----------
 VENV_DIR="$SCRIPT_DIR/.venv"
