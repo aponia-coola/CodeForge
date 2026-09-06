@@ -10,6 +10,14 @@ cd "$SCRIPT_DIR"
 log() { printf '[deploy_termux.sh] %s\n' "$*"; }
 die() { printf '[deploy_termux.sh] 错误：%s\n' "$*" >&2; exit 1; }
 
+VENV_ERR=""
+FILTERED_REQ=""
+cleanup() {
+    [[ -z "$VENV_ERR" ]] || rm -f "$VENV_ERR"
+    [[ -z "$FILTERED_REQ" ]] || rm -f "$FILTERED_REQ"
+}
+trap cleanup EXIT
+
 UNAME_ALL="$(uname -a 2>/dev/null || true)"
 UNAME_OS="$(uname -o 2>/dev/null || true)"
 printf '%s\n%s\n' "$UNAME_ALL" "$UNAME_OS" |
@@ -39,7 +47,7 @@ fi
 command -v pkg >/dev/null 2>&1 || die "找不到 pkg，请确认正在 Termux 中运行"
 log "安装/更新 Termux Python"
 pkg update -y
-pkg install -y python
+pkg install -y python python-cryptography python-cffi python-bcrypt
 
 # Termux 的 python 命令名和发行版配置可能不同，优先按需求固定为 python3。
 PY="python3"
@@ -49,21 +57,21 @@ command -v "$PY" >/dev/null 2>&1 || die "找不到 python3"
 
 VENV_DIR="$SCRIPT_DIR/.venv"
 VENV_PY="$VENV_DIR/bin/python"
-if [[ ! -x "$VENV_PY" ]]; then
+if [[ ! -x "$VENV_PY" ]] ||
+   ! grep -q '^include-system-site-packages = true$' "$VENV_DIR/pyvenv.cfg" 2>/dev/null; then
     rm -rf "$VENV_DIR"
     log "创建 venv"
     VENV_ERR="$(mktemp)"
-    trap 'rm -f "$VENV_ERR"' EXIT
-    if ! "$PY" -m venv "$VENV_DIR" 2>"$VENV_ERR"; then
+    if ! "$PY" -m venv --system-site-packages "$VENV_DIR" 2>"$VENV_ERR"; then
         if grep -q '\[Errno 13\]' "$VENV_ERR"; then
             log "检测到权限/符号链接错误，重试 --without-pip --symlinks=False"
             rm -rf "$VENV_DIR"
-            "$PY" -m venv --without-pip --symlinks=False "$VENV_DIR" \
+            "$PY" -m venv --system-site-packages --without-pip --symlinks=False "$VENV_DIR" \
                 || die "venv 创建失败：$(tr '\n' ' ' < "$VENV_ERR")"
         else
             log "标准 venv 创建失败，重试 --without-pip --symlinks=False"
             rm -rf "$VENV_DIR"
-            "$PY" -m venv --without-pip --symlinks=False "$VENV_DIR" \
+            "$PY" -m venv --system-site-packages --without-pip --symlinks=False "$VENV_DIR" \
                 || die "venv 创建失败：$(tr '\n' ' ' < "$VENV_ERR")"
         fi
     fi
@@ -83,9 +91,11 @@ if grep -Eiq '(^|[[:space:]])openai([<>=!~[:space:]]|$)' "$REQ_FILE"; then
     else
         log "未检测到 Rust，跳过 jiter，安装核心依赖"
         FILTERED_REQ="$(mktemp)"
-        trap 'rm -f "$VENV_ERR" "$FILTERED_REQ"' EXIT
-        sed -E '/^[[:space:]]*openai([<>=!~[:space:]]|$)/Id' "$REQ_FILE" > "$FILTERED_REQ"
+        # asyncssh/openai 的依赖解析会把 cryptography 拉回源码编译；
+        # cryptography/cffi/bcrypt 已由 Termux 原生包提供，因此单独安装它们。
+        grep -Eiv '^[[:space:]]*(openai|asyncssh)([<>=!~[:space:]]|$)' "$REQ_FILE" > "$FILTERED_REQ"
         "$VENV_PY" -m pip install -r "$FILTERED_REQ"
+        "$VENV_PY" -m pip install --no-deps 'asyncssh>=2.13,<3'
         "$VENV_PY" -m pip install --no-deps 'openai>=1.0,<3'
     fi
 else
