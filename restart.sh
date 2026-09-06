@@ -3,18 +3,18 @@
 #  CodeForge 一键启动脚本  (Linux / macOS / Termux;Windows 用户请用 start.ps1)
 # ----------------------------------------------------------------------------
 #  用法:
-#    ./start.sh                       默认 (host=127.0.0.1 port=9191 自动开浏览器，前台挂起)
-#    ./start.sh --port 8080           自定义端口
-#    ./start.sh --host 0.0.0.0        监听所有网卡(局域网可见,会打印风险提示)
-#    ./start.sh --no-browser          不自动开浏览器
-#    ./start.sh --rebuild             强制重建 .venv
-#    ./start.sh --update              只更新 pip 依赖,不动 venv
-#    ./start.sh --dev                 开发模式 (启用 Flask debug)
-#    ./start.sh start                 启动并前台挂起（默认，Ctrl+C 停止）
-#    ./start.sh stop                  停止占用端口的服务
-#    ./start.sh restart               重启
-#    ./start.sh status                查看是否运行
-#    ./start.sh --help                帮助
+#    ./restart.sh                       默认 (host=127.0.0.1 port=9191 自动开浏览器，前台挂起)
+#    ./restart.sh --port 8080           自定义端口
+#    ./restart.sh --host 0.0.0.0        监听所有网卡(局域网可见,会打印风险提示)
+#    ./restart.sh --no-browser          不自动开浏览器
+#    ./restart.sh --rebuild             强制重建 .venv
+#    ./restart.sh --update              只更新 pip 依赖,不动 venv
+#    ./restart.sh --dev                 开发模式 (启用 Flask debug)
+#    ./restart.sh start                 启动并前台挂起（默认，Ctrl+C 停止）
+#    ./restart.sh stop                  停止占用端口的服务
+#    ./restart.sh restart               重启
+#    ./restart.sh status                查看是否运行
+#    ./restart.sh --help                帮助
 #
 #  认证:
 #    脚本会生成 CODEFORGE_TOKEN 并透传给 main.py,自动打开的 URL 里已带 #token=。
@@ -62,7 +62,7 @@ while [[ $# -gt 0 ]]; do
             exit 0
             ;;
         *)
-            echo "[start.sh] 未知参数: $1 (试试 --help)" >&2
+            echo "[restart.sh] 未知参数: $1 (试试 --help)" >&2
             exit 1
             ;;
     esac
@@ -84,21 +84,21 @@ get_pid() {
 }
 show_status() {
     local pid; pid="$(get_pid)"
-    if [[ -n "$pid" ]]; then echo "[start.sh] 运行中  pid=$pid  port=$PORT"; else echo "[start.sh] 未运行  port=$PORT"; fi
+    if [[ -n "$pid" ]]; then echo "[restart.sh] 运行中  pid=$pid  port=$PORT"; else echo "[restart.sh] 未运行  port=$PORT"; fi
 }
 stop_server() {
     local pid; pid="$(get_pid)"
-    if [[ -z "$pid" ]]; then echo "[start.sh] 未发现运行中的服务 (port $PORT)"; return 0; fi
-    echo "[start.sh] 停止  pid=$pid  port=$PORT ..."
+    if [[ -z "$pid" ]]; then echo "[restart.sh] 未发现运行中的服务 (port $PORT)"; return 0; fi
+    echo "[restart.sh] 停止  pid=$pid  port=$PORT ..."
     kill "$pid" 2>/dev/null || true
     for i in {1..15}; do sleep 0.4; if ! kill -0 "$pid" 2>/dev/null; then break; fi; done
-    if kill -0 "$pid" 2>/dev/null; then echo "[start.sh] 进程 $pid 仍在，尝试 kill -9"; kill -9 "$pid" 2>/dev/null || true; fi
+    if kill -0 "$pid" 2>/dev/null; then echo "[restart.sh] 进程 $pid 仍在，尝试 kill -9"; kill -9 "$pid" 2>/dev/null || true; fi
     rm -f "$PID_FILE"
-    pid="$(get_pid)"; if [[ -z "$pid" ]]; then echo "[start.sh] 已停止"; else echo "[start.sh] 仍有进程 $pid"; fi
+    pid="$(get_pid)"; if [[ -z "$pid" ]]; then echo "[restart.sh] 已停止"; else echo "[restart.sh] 仍有进程 $pid"; fi
 }
 if [[ $DO_STATUS -eq 1 ]]; then show_status; exit 0; fi
 if [[ $DO_STOP -eq 1 && $DO_RESTART -eq 0 ]]; then stop_server; exit 0; fi
-if [[ $DO_RESTART -eq 1 ]]; then stop_server; sleep 1; echo "[start.sh] 重启中..."; fi
+if [[ $DO_RESTART -eq 1 ]]; then stop_server; sleep 1; echo "[restart.sh] 重启中..."; fi
 
 # ----------- 平台检测 -----------
 detect_platform() {
@@ -119,7 +119,7 @@ detect_platform() {
     esac
 }
 PLATFORM="$(detect_platform)"
-echo "[start.sh] platform = $PLATFORM  (cwd: $SCRIPT_DIR)"
+echo "[restart.sh] platform = $PLATFORM  (cwd: $SCRIPT_DIR)"
 
 # ----------- Python 解释器选择 -----------
 PY=""
@@ -139,8 +139,8 @@ find_python() {
     fi
     return 1
 }
-find_python || { echo "[start.sh] 找不到 python,请先安装 Python 3.10+" >&2; exit 1; }
-echo "[start.sh] python  = $PY"
+find_python || { echo "[restart.sh] 找不到 python,请先安装 Python 3.10+" >&2; exit 1; }
+echo "[restart.sh] python  = $PY"
 
 # ----------- venv 路径 -----------
 VENV_DIR="$SCRIPT_DIR/.venv"
@@ -151,14 +151,14 @@ esac
 
 # ----------- 重建 venv -----------
 if [[ $REBUILD -eq 1 && -d "$VENV_DIR" ]]; then
-    echo "[start.sh] 重建 venv (--rebuild) ..."
+    echo "[restart.sh] 重建 venv (--rebuild) ..."
     rm -rf "$VENV_DIR"
 fi
 
 # ----------- 创建/激活 venv -----------
 if [[ ! -f "$ACTIVATE" ]]; then
-    echo "[start.sh] 创建 venv ..."
-    "$PY" -m venv "$VENV_DIR" || { echo "[start.sh] venv 创建失败" >&2; exit 1; }
+    echo "[restart.sh] 创建 venv ..."
+    "$PY" -m venv "$VENV_DIR" || { echo "[restart.sh] venv 创建失败" >&2; exit 1; }
     # 重新定位 venv 里的 python
     case "$PLATFORM" in
         windows) PY="$VENV_DIR/Scripts/python.exe" ;;
@@ -197,15 +197,15 @@ HAVE_HASH=""
 
 if [[ "$WANT_HASH" != "$HAVE_HASH" ]] || [[ $UPDATE_ONLY -eq 1 ]]; then
     if [[ -z "$REQ_FILE" ]]; then
-        echo "[start.sh] 警告: 找不到 requirements.txt / requirement.txt" >&2
+        echo "[restart.sh] 警告: 找不到 requirements.txt / requirement.txt" >&2
     else
-        echo "[start.sh] 安装依赖 ($(basename "$REQ_FILE")) ..."
+        echo "[restart.sh] 安装依赖 ($(basename "$REQ_FILE")) ..."
         python -m pip install --upgrade pip wheel --quiet
         python -m pip install -r "$REQ_FILE" --quiet
     fi
     printf '%s\n' "$WANT_HASH" > "$DEPS_STAMP"
 else
-    echo "[start.sh] 依赖未变动,跳过安装"
+    echo "[restart.sh] 依赖未变动,跳过安装"
 fi
 
 # ----------- 健康检查(端口占用) -----------
@@ -229,7 +229,7 @@ PY
     return 1
 }
 if check_port "$PORT"; then
-    echo "[start.sh] 警告: 端口 $PORT 已被占用,试着改 --port" >&2
+    echo "[restart.sh] 警告: 端口 $PORT 已被占用,试着改 --port" >&2
     read -r -p "    仍然继续吗? [y/N] " ans
     [[ "$ans" =~ ^[Yy]$ ]] || exit 1
 fi
@@ -288,7 +288,7 @@ open_browser() {
             ;;
         termux)
             # Termux 没桌面浏览器,提示用户
-            echo "[start.sh] Termux 无桌面浏览器,请手机浏览器打开: $url"
+            echo "[restart.sh] Termux 无桌面浏览器,请手机浏览器打开: $url"
             ;;
     esac
 }
@@ -300,7 +300,7 @@ echo "  CodeForge  平台=$PLATFORM  绑定=$HOST:$PORT"
 echo "  浏览器:    $URL"
 echo "  token :    $CODEFORGE_TOKEN"
 echo "  来源  :    $TOKEN_SOURCE"
-echo "  Stop   :    Ctrl + C  or ./start.sh stop in another terminal"
+echo "  Stop   :    Ctrl + C  or ./restart.sh stop in another terminal"
 if ! is_loopback "$HOST"; then
     echo "------------------------------------------------------------"
     echo "  [!] 正在绑定非回环地址 $HOST,局域网内任意设备都能连到本服务。"
@@ -325,14 +325,14 @@ mkdir -p "$LOG_DIR"
 for name in server.log server.err.log; do
     if [[ -f "$SCRIPT_DIR/$name" && ! -f "$LOG_DIR/$name" ]]; then
         mv "$SCRIPT_DIR/$name" "$LOG_DIR/$name"
-        echo "[start.sh] 已迁移 $name -> log/$name"
+        echo "[restart.sh] 已迁移 $name -> log/$name"
     fi
 done
 LOG_OUT="$LOG_DIR/server.log"
 LOG_ERR="$LOG_DIR/server.err.log"
-echo "[start.sh] stdout -> $LOG_OUT"
-echo "[start.sh] stderr -> $LOG_ERR"
-echo "[start.sh] foreground hanging, Ctrl+C to stop (or ./start.sh stop in another terminal)"
+echo "[restart.sh] stdout -> $LOG_OUT"
+echo "[restart.sh] stderr -> $LOG_ERR"
+echo "[restart.sh] foreground hanging, Ctrl+C to stop (or ./restart.sh stop in another terminal)"
 echo "$PID" > "$PID_FILE" 2>/dev/null || true
 # 退出时清 pid（exec 后 PID 不变，stop 按此文件杀）
 trap 'rm -f "$PID_FILE" 2>/dev/null' EXIT INT TERM
