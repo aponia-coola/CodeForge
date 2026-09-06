@@ -188,12 +188,16 @@ echo "[restart.sh] platform = $PLATFORM  (cwd: $SCRIPT_DIR)"
 # ----------- Python 解释器选择 -----------
 PY=""
 find_python() {
-    # 优先 .venv 里的(重建时跳过)
+    # 优先 .venv 里的(重建时跳过) - 但要验证 python 真的能跑
     if [[ -z "$PY" && $REBUILD -eq 0 ]]; then
         case "$PLATFORM" in
             windows) [[ -x "$SCRIPT_DIR/.venv/Scripts/python.exe" ]] && PY="$SCRIPT_DIR/.venv/Scripts/python.exe" ;;
             *)       [[ -x "$SCRIPT_DIR/.venv/bin/python" ]]       && PY="$SCRIPT_DIR/.venv/bin/python"       ;;
         esac
+        # 验证 venv python 真的能跑通 --version,坏了就当没找到
+        if [[ -n "$PY" ]] && ! "$PY" --version >/dev/null 2>&1; then
+            PY=""
+        fi
     fi
     # 再查系统 PATH
     if [[ -z "$PY" ]]; then
@@ -201,6 +205,10 @@ find_python() {
         if [[ "$PLATFORM" == "termux" ]] && command -v python3 >/dev/null 2>&1; then
             PY="$(command -v python3)"; return 0
         fi
+        # Termux 常见 python 路径兜底
+        for p in /data/data/com.termux/files/usr/bin/python3 /usr/bin/python3; do
+            [[ -x "$p" ]] && PY="$p" && return 0
+        done
         for c in python3.12 python3.11 python3.10 python3 python; do
             if command -v "$c" >/dev/null 2>&1; then PY="$(command -v "$c")"; return 0; fi
         done
@@ -224,7 +232,18 @@ if [[ $REBUILD -eq 1 && -d "$VENV_DIR" ]]; then
 fi
 
 # ----------- 创建/激活 venv -----------
-if [[ ! -f "$ACTIVATE" ]]; then
+# 先检测现有 venv 是否完好:activate 存在且 python 可执行且能跑 --version
+venv_ok=0
+if [[ -f "$ACTIVATE" ]]; then
+    case "$PLATFORM" in
+        windows) [[ -x "$VENV_DIR/Scripts/python.exe" ]] && "$VENV_DIR/Scripts/python.exe" --version >/dev/null 2>&1 && venv_ok=1 ;;
+        *)       [[ -x "$VENV_DIR/bin/python" ]]       && "$VENV_DIR/bin/python" --version >/dev/null 2>&1 && venv_ok=1 ;;
+    esac
+fi
+
+if [[ $venv_ok -eq 0 ]]; then
+    # venv 不存在或损坏,需要 (重新)创建
+    [[ -d "$VENV_DIR" ]] && rm -rf "$VENV_DIR"
     echo "[restart.sh] 创建 venv ..."
     if [[ $NO_SYMLINKS -eq 1 ]]; then
         # 共享存储等 FUSE 文件系统不支持 symlink:用 --without-pip 再手动装,跳过 lib64 软链
@@ -235,11 +254,12 @@ if [[ ! -f "$ACTIVATE" ]]; then
     else
         # 默认:符号链接方式。失败(如 Errno 13, FUSE/共享存储不支持 symlink)时
         # 自动重试 --copies(强制拷贝,不建软链,是 POSIX 上规避 Errno 13 的正解)。
-        if ! "$PY" -m venv "$VENV_DIR" 2>/tmp/codeforge-venv.err; then
+        VENV_ERR="$SCRIPT_DIR/.venv_err"
+        if ! "$PY" -m venv "$VENV_DIR" 2>"$VENV_ERR"; then
             echo "[restart.sh] venv 默认创建失败(可能不支持符号链接),自动重试 --copies ..."
             rm -rf "$VENV_DIR"
             "$PY" -m venv --copies "$VENV_DIR" || {
-                echo "[restart.sh] venv 创建失败(--copies 也失败, 见 /tmp/codeforge-venv.err)" >&2
+                echo "[restart.sh] venv 创建失败(--copies 也失败, 见 $VENV_ERR)" >&2
                 exit 1
             }
         fi
@@ -296,11 +316,14 @@ if [[ "$WANT_HASH" != "$HAVE_HASH" ]] || [[ $UPDATE_ONLY -eq 1 ]]; then
         # 已装好。
         if [[ "$PLATFORM" == "termux" ]] && grep -qiE "^openai[=<>]" "$REQ_FILE" 2>/dev/null; then
             echo "[restart.sh] Termux+openai: 用 --no-deps 跳过 jiter(Rust) 依赖,仅装核心 ..."
-            # 先把不含 openai 的核心包装上
-            grep -viE "^openai" "$REQ_FILE" | python -m pip install -r /dev/stdin --quiet || true
+            # 先把不含 openai 和 cryptography 的核心包装上
+            grep -viE "^(openai|cryptography)" "$REQ_FILE" | python -m pip install -r /dev/stdin --quiet || true
             # openai 单装 --no-deps,失败不致命
             grep -iE "^openai" "$REQ_FILE" | python -m pip install -r /dev/stdin --no-deps --quiet || \
                 { echo "[restart.sh] 警告: openai 安装失败(jiter/Rust 被跳过),可后续补;核心功能不受影响。" >&2; }
+            # cryptography 使用 --only-binary 避免 rust 编译,失败不致命
+            grep -iE "^cryptography" "$REQ_FILE" | python -m pip install -r /dev/stdin --only-binary=cryptography --quiet || \
+                { echo "[restart.sh] 警告: cryptography 安装失败(无预编译 wheel),可后续补;核心功能不受影响。" >&2; }
         else
             python -m pip install -r "$REQ_FILE" --quiet
         fi
