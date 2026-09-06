@@ -450,7 +450,14 @@
 
           <div class="model-form-row">
             <label class="model-field">
-              <span class="model-field-label">环境变量名 (apiKeyEnv)</span>
+              <span class="model-field-label">密钥来源</span>
+              <select id="m-key-source">
+                <option value="apikey">使用 API Key</option>
+                <option value="env">使用环境变量</option>
+              </select>
+            </label>
+            <label class="model-field" id="m-apikeyenv-field">
+              <span class="model-field-label">环境变量名</span>
               <input type="text" id="m-apikeyenv" maxlength="128" placeholder="例如: CODEFORGE_DEEPSEEK_KEY" spellcheck="false">
             </label>
             <label class="model-field">
@@ -462,7 +469,7 @@
           <label class="model-field">
             <span class="model-field-label">API Key</span>
             <div class="model-key-row">
-              <input type="password" id="m-apikey" maxlength="4096" placeholder="留空保留原值;非空=覆盖;Clear 按钮=清本地 key" spellcheck="false" autocomplete="new-password">
+              <input type="password" id="m-apikey" maxlength="4096" placeholder="请输入 API Key" spellcheck="false" autocomplete="new-password">
               <button type="button" class="model-btn small" id="m-apikey-toggle" title="显示/隐藏">显示</button>
               <button type="button" class="model-btn small danger" id="m-apikey-clear" title="清除本地 key">清除</button>
             </div>

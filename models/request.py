@@ -841,6 +841,7 @@ def list_models_admin() -> list[dict]:
             "name": entry.get("name") or mid,
             "vendor": entry.get("vendor") or "",
             "url": entry.get("url") or "",
+            "apiKeyEnv": _env_key_name(entry),
             "maxInputTokens": entry.get("maxInputTokens"),
             "maxOutputTokens": entry.get("maxOutputTokens"),
             "supportsToolCall": bool(entry.get("supportsToolCall")),

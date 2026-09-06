@@ -4693,6 +4693,9 @@
   const modelMsg       = document.getElementById('m-msg');
   const apikeyStatus   = document.getElementById('m-apikey-status');
   const apikeyInput    = document.getElementById('m-apikey');
+  const keySourceSelect= document.getElementById('m-key-source');
+  const apikeyEnvInput = document.getElementById('m-apikeyenv');
+  const apikeyEnvField = document.getElementById('m-apikeyenv-field');
   const apikeyToggleBtn= document.getElementById('m-apikey-toggle');
   const apikeyClearBtn = document.getElementById('m-apikey-clear');
   const testBtn        = document.getElementById('m-test-btn');
@@ -4737,6 +4740,17 @@
       none:    '未设置 key',
     };
     apikeyStatus.textContent = hasKey ? (labels[source] || '已设置 key') : labels.none;
+  }
+
+  function syncKeySourceFields() {
+    const useEnv = keySourceSelect && keySourceSelect.value === 'env';
+    if (apikeyInput) {
+      // 清除后仍允许直接输入新 key；只有选择环境变量模式才禁用 API Key。
+      apikeyInput.disabled = useEnv;
+      if (useEnv) apikeyInput.value = '';
+    }
+    if (apikeyEnvInput) apikeyEnvInput.disabled = !useEnv;
+    if (apikeyEnvField) apikeyEnvField.classList.toggle('is-disabled', !useEnv);
   }
 
   function renderModelList() {
@@ -4804,9 +4818,10 @@
     document.getElementById('m-name').value     = entry.name || '';
     document.getElementById('m-vendor').value   = entry.vendor || '';
     document.getElementById('m-url').value      = entry.url || '';
-    document.getElementById('m-apikeyenv').value= '';      // admin 端不回显 env 名(只在 entry.id 已知时再读)
+    apikeyEnvInput.value = entry.apiKeyEnv || '';
     document.getElementById('m-timeout').value  = '';
     document.getElementById('m-apikey').value   = '';
+    apikeyInput.disabled = false;
     document.getElementById('m-maxinput').value = entry.maxInputTokens != null ? entry.maxInputTokens : '';
     document.getElementById('m-maxoutput').value= entry.maxOutputTokens != null ? entry.maxOutputTokens : '';
     document.getElementById('m-toolcall').checked = !!entry.supportsToolCall;
@@ -4814,26 +4829,13 @@
     modelFormTitle.textContent = '编辑模型';
     modelFormChip.textContent  = entry.id;
     setApikeyStatus(entry.hasKey, entry.keySource);
+    keySourceSelect.value = entry.keySource === 'env' ? 'env' : 'apikey';
+    syncKeySourceFields();
     setModelMsg('', null);
-
-    // 单独拉一次该条目的真实 env 名(只读字段)
-    fetchEntryDetail(entry.id);
 
     // 按钮显示
     deleteBtn.hidden     = entry.origin !== 'local';   // 只有本地条目可删
     setCurrentBtn.hidden = entry.id === modelState.current;
-  }
-
-  async function fetchEntryDetail(id) {
-    try {
-      // admin 端已经包含 keySource, 但 apiKeyEnv 没有专门字段,我们用 models(request.py) 的实现回显
-      // 这里直接从 /api/models 公开端拉一遍, 找到对应条目
-      const r = await api('/api/models');
-      const data = await r.json();
-      const found = (data.models || []).find(m => m.id === id);
-      // /api/models 公开端不返回 env/url,所以这里先置为空
-      // 真正需要 env 名需要后端再返回,目前用 admin 端的 url 已经满足, env 名让用户自己填或留空
-    } catch (e) { /* 静默,不影响主流程 */ }
   }
 
   function newModelForm() {
@@ -4848,12 +4850,15 @@
     document.getElementById('m-apikeyenv').value= '';
     document.getElementById('m-timeout').value  = '';
     document.getElementById('m-apikey').value   = '';
+    apikeyInput.disabled = false;
+    keySourceSelect.value = 'apikey';
     document.getElementById('m-maxinput').value = '';
     document.getElementById('m-maxoutput').value= '';
     document.getElementById('m-toolcall').checked = true;
     modelFormTitle.textContent = '新增模型';
     modelFormChip.textContent  = '';
     setApikeyStatus(false, 'none');
+    syncKeySourceFields();
     setModelMsg('', null);
     deleteBtn.hidden     = true;
     setCurrentBtn.hidden = true;
@@ -4904,15 +4909,19 @@
     if (vendor) spec.vendor = vendor;
     const url = document.getElementById('m-url').value.trim();
     if (url) spec.url = url;
-    const env = document.getElementById('m-apikeyenv').value.trim();
-    if (env) spec.apiKeyEnv = env;
+    const useEnv = keySourceSelect && keySourceSelect.value === 'env';
+    const env = apikeyEnvInput.value.trim();
+    // 始终显式发送来源，切换来源时可以清除另一种旧配置。
+    spec.apiKeyEnv = useEnv ? env : null;
     const timeout = document.getElementById('m-timeout').value.trim();
     if (timeout) {
       const n = parseInt(timeout, 10);
       if (!isNaN(n) && n > 0) spec.timeout = n;
     }
     const apikeyVal = apikeyInput.value;
-    if (modelState.apikeyCleared) {
+    if (useEnv) {
+      spec.apiKey = null;
+    } else if (modelState.apikeyCleared) {
       spec.apiKey = null;                  // 显式 null = 清本地 key
     } else if (apikeyVal && apikeyVal.length > 0) {
       spec.apiKey = apikeyVal;             // 非空 = 覆盖
@@ -4942,6 +4951,11 @@
     if (modelState.isNew && !spec.url) {
       setModelMsg('请填写 API URL', 'err');
       document.getElementById('m-url').focus();
+      return;
+    }
+    if (keySourceSelect && keySourceSelect.value === 'env' && !spec.apiKeyEnv) {
+      setModelMsg('请选择环境变量并填写变量名', 'err');
+      apikeyEnvInput.focus();
       return;
     }
     setModelMsg('保存中...', null);
@@ -4998,6 +5012,8 @@
       setModelMsg('已删除', 'ok');
       modelState.editing = null;
       modelState.isNew = false;
+      deleteBtn.hidden = true;
+      setCurrentBtn.hidden = true;
       await loadModelList();
       switchModelView('list');
     } catch (err) {
@@ -5110,6 +5126,7 @@
       modelState.apikeyCleared = true;
       setApikeyStatus(false, 'none');
       setModelMsg('已标记清除本地 key,保存后生效', null);
+      syncKeySourceFields();
     });
   }
   if (apikeyInput) {
@@ -5119,6 +5136,13 @@
         apikeyInput.disabled = false;
         setModelMsg('', null);
       }
+    });
+  }
+  if (keySourceSelect) {
+    keySourceSelect.addEventListener('change', () => {
+      if (keySourceSelect.value === 'env') modelState.apikeyCleared = false;
+      syncKeySourceFields();
+      setModelMsg('', null);
     });
   }
   if (modelForm) {
