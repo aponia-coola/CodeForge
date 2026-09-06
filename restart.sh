@@ -10,6 +10,7 @@
 #    ./restart.sh --rebuild             强制重建 .venv
 #    ./restart.sh --update              只更新 pip 依赖,不动 venv
 #    ./restart.sh --dev                 开发模式 (启用 Flask debug)
+#    ./restart.sh --no-symlinks         Termux/共享存储:强制 venv 用复制而非软链接(兜底)
 #    ./restart.sh start                 启动并前台挂起（默认，Ctrl+C 停止）
 #    ./restart.sh stop                  停止占用端口的服务
 #    ./restart.sh restart               重启
@@ -36,6 +37,7 @@ OPEN_BROWSER=1
 REBUILD=0
 UPDATE_ONLY=0
 DEV_MODE=0
+NO_SYMLINKS=0
 DO_STOP=0
 DO_RESTART=0
 DO_STATUS=0
@@ -52,13 +54,14 @@ while [[ $# -gt 0 ]]; do
         --rebuild)     REBUILD=1;        shift   ;;
         --update)      UPDATE_ONLY=1;    shift   ;;
         --dev)         DEV_MODE=1;       shift   ;;
+        --no-symlinks) NO_SYMLINKS=1;    shift   ;;
         start)         ACTION="start";   shift   ;;
         stop|--stop)   DO_STOP=1;        shift   ;;
         restart|--restart) DO_RESTART=1; shift   ;;
         status|--status) DO_STATUS=1;    shift   ;;
         --foreground|--console) DEV_MODE="$DEV_MODE"; shift ;; # 兼容前台
         -h|--help)
-            sed -n '2,27p' "$0"
+            sed -n '2,30p' "$0"
             exit 0
             ;;
         *)
@@ -80,6 +83,45 @@ get_pid() {
         lsof -ti :"$PORT" 2>/dev/null | head -n 1
     elif command -v ss >/dev/null 2>&1; then
         ss -lptn "sport = :$PORT" 2>/dev/null | grep -o 'pid=[0-9]*' | head -n1 | cut -d= -f2
+    else
+        # Termux 无 lsof/ss:用 python 读 /proc/net/tcp 找监听该端口的进程 PID
+        # (Termux 是 Linux, /proc/net/tcp 第 2 列是本地端口十六进制, 第 4 列 0A=LISTEN;
+        #  从 inode 反查 /proc/*/fd 归属进程)。失败返回空。
+        python - "$PORT" <<'PY' 2>/dev/null
+import os, re, sys
+port = int(sys.argv[1])
+hex_port = "%04X" % port
+inodes = set()
+try:
+    with open("/proc/net/tcp") as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) < 10: continue
+            local = parts[1]
+            st = parts[3]
+            if st == "0A" and (local.endswith(":" + hex_port) or local.endswith(":" + hex_port.lower())):
+                inodes.add(parts[9])
+except OSError:
+    sys.exit(0)
+# 反查 inode -> pid
+found = None
+for fd in os.listdir("/proc"):
+    if not fd.isdigit(): continue
+    p = "/proc/%s/fd" % fd
+    try:
+        for l in os.listdir(p):
+            try:
+                t = os.readlink(os.path.join(p, l))
+            except OSError:
+                continue
+            m = re.search(r"socket:\[(\d+)\]", t)
+            if m and m.group(1) in inodes:
+                found = fd; break
+    except OSError:
+        continue
+    if found: break
+if found: print(found)
+PY
     fi
 }
 show_status() {
@@ -107,7 +149,9 @@ detect_platform() {
     case "$u" in
         Linux*)
             # Termux 在 Android 上 /data/data/com.termux/... PATH 里
-            if [[ -d "/data/data/com.termux" ]] || [[ "$PREFIX" == *"com.termux"* ]]; then
+            # 冗余判断:目录 / $PREFIX / uname -o 任一命中即视为 termux
+            if [[ -d "/data/data/com.termux" ]] || [[ "$PREFIX" == *"com.termux"* ]] \
+               || uname -o 2>/dev/null | grep -qiE "android"; then
                 echo "termux"
             else
                 echo "linux"
@@ -119,6 +163,26 @@ detect_platform() {
     esac
 }
 PLATFORM="$(detect_platform)"
+
+# ----------- 共享存储检测 (Termux/FUSE 不支持符号链接) -----------
+# Android 共享存储 /storage/... 或 /sdcard/... 是 FUSE/sdcardfs,不允许创建 symlink,
+# venv 默认建 lib64 -> lib 软链会直接 Permission denied (Errno 13)。
+# 检测到即提示迁移,并自动兜底 --no-symlinks。
+on_shared_storage=0
+# 共享存储路径: /storage/ /sdcard/ 或 Termux 内部 /data/user/.../storage/shared/ 等
+if [[ "$SCRIPT_DIR" == *"/storage/"* || "$SCRIPT_DIR" == /sdcard/* || "$SCRIPT_DIR" == *"/sdcard/"* \
+   || "$SCRIPT_DIR" == *"/storage/shared/"* ]]; then
+    on_shared_storage=1
+    echo "[restart.sh] 警告: 项目位于共享存储 ($SCRIPT_DIR),该文件系统不支持符号链接。" >&2
+    echo "[restart.sh]       建议迁移到 ~/ 私有目录 (如 ~/codeforge) 以获得稳定体验:" >&2
+    echo "[restart.sh]         cp -rP \"$SCRIPT_DIR\" ~/codeforge && cd ~/codeforge" >&2
+    echo "[restart.sh]       若坚持在共享存储运行,将启用 --no-symlinks 兜底创建 venv。" >&2
+    if [[ $NO_SYMLINKS -ne 1 ]]; then
+        read -r -p "[restart.sh] 仍要继续吗? [y/N] " _ans
+        [[ "$_ans" =~ ^[Yy]$ ]] || exit 1
+        NO_SYMLINKS=1
+    fi
+fi
 echo "[restart.sh] platform = $PLATFORM  (cwd: $SCRIPT_DIR)"
 
 # ----------- Python 解释器选择 -----------
@@ -133,6 +197,10 @@ find_python() {
     fi
     # 再查系统 PATH
     if [[ -z "$PY" ]]; then
+        # Termux 只装 python3,没有 python 软链;直接命中,跳过逐个探测以免误判
+        if [[ "$PLATFORM" == "termux" ]] && command -v python3 >/dev/null 2>&1; then
+            PY="$(command -v python3)"; return 0
+        fi
         for c in python3.12 python3.11 python3.10 python3 python; do
             if command -v "$c" >/dev/null 2>&1; then PY="$(command -v "$c")"; return 0; fi
         done
@@ -158,7 +226,24 @@ fi
 # ----------- 创建/激活 venv -----------
 if [[ ! -f "$ACTIVATE" ]]; then
     echo "[restart.sh] 创建 venv ..."
-    "$PY" -m venv "$VENV_DIR" || { echo "[restart.sh] venv 创建失败" >&2; exit 1; }
+    if [[ $NO_SYMLINKS -eq 1 ]]; then
+        # 共享存储等 FUSE 文件系统不支持 symlink:用 --without-pip 再手动装,跳过 lib64 软链
+        echo "[restart.sh] 共享存储模式: 使用 --without-pip 创建 venv(跳过符号链接) ..."
+        "$PY" -m venv --without-pip "$VENV_DIR" || { echo "[restart.sh] venv 创建失败" >&2; exit 1; }
+        # 手动引导 pip: 用 ensurepip,若也被软链卡住则降级为空 venv 再报错
+        "$VENV_DIR/bin/python" -m ensurepip --upgrade 2>/dev/null || true
+    else
+        # 默认:符号链接方式。失败(如 Errno 13, FUSE/共享存储不支持 symlink)时
+        # 自动重试 --copies(强制拷贝,不建软链,是 POSIX 上规避 Errno 13 的正解)。
+        if ! "$PY" -m venv "$VENV_DIR" 2>/tmp/codeforge-venv.err; then
+            echo "[restart.sh] venv 默认创建失败(可能不支持符号链接),自动重试 --copies ..."
+            rm -rf "$VENV_DIR"
+            "$PY" -m venv --copies "$VENV_DIR" || {
+                echo "[restart.sh] venv 创建失败(--copies 也失败, 见 /tmp/codeforge-venv.err)" >&2
+                exit 1
+            }
+        fi
+    fi
     # 重新定位 venv 里的 python
     case "$PLATFORM" in
         windows) PY="$VENV_DIR/Scripts/python.exe" ;;
@@ -201,7 +286,24 @@ if [[ "$WANT_HASH" != "$HAVE_HASH" ]] || [[ $UPDATE_ONLY -eq 1 ]]; then
     else
         echo "[restart.sh] 安装依赖 ($(basename "$REQ_FILE")) ..."
         python -m pip install --upgrade pip wheel --quiet
-        python -m pip install -r "$REQ_FILE" --quiet
+
+        # --- Termux/Rust 编译规避 ---
+        # openai 依赖 jiter,而 jiter 需要 Rust 编译;Termux 的 Android 目标三元组
+        # (aarch64-unknown-linux-android)不在 rustup 默认支持列表,且仓库 rust 包
+        # 可能缺失,即使装了 rustc 也一样会编失败。所以在 Termux 装 openai 时
+        # 一律用 --no-deps 只装 openai 本体,跳过 jiter 等 Rust 依赖(那需要 --no-binary
+        # 强制源码编译,反而更需要 Rust,是反效果),失败不致命,核心 flask/asyncssh/watchdog
+        # 已装好。
+        if [[ "$PLATFORM" == "termux" ]] && grep -qiE "^openai[=<>]" "$REQ_FILE" 2>/dev/null; then
+            echo "[restart.sh] Termux+openai: 用 --no-deps 跳过 jiter(Rust) 依赖,仅装核心 ..."
+            # 先把不含 openai 的核心包装上
+            grep -viE "^openai" "$REQ_FILE" | python -m pip install -r /dev/stdin --quiet || true
+            # openai 单装 --no-deps,失败不致命
+            grep -iE "^openai" "$REQ_FILE" | python -m pip install -r /dev/stdin --no-deps --quiet || \
+                { echo "[restart.sh] 警告: openai 安装失败(jiter/Rust 被跳过),可后续补;核心功能不受影响。" >&2; }
+        else
+            python -m pip install -r "$REQ_FILE" --quiet
+        fi
     fi
     printf '%s\n' "$WANT_HASH" > "$DEPS_STAMP"
 else
@@ -334,7 +436,7 @@ echo "[restart.sh] stdout -> $LOG_OUT"
 echo "[restart.sh] stderr -> $LOG_ERR"
 echo "[restart.sh] foreground hanging, Ctrl+C to stop (or ./restart.sh stop in another terminal)"
 echo "$PID" > "$PID_FILE" 2>/dev/null || true
-# 退出时清 pid（exec 后 PID 不变，stop 按此文件杀）
+# 退出时清 pid（exec 后 PID 不变，stop 能根据端口找到）
 trap 'rm -f "$PID_FILE" 2>/dev/null' EXIT INT TERM
 
 # exec 让 main.py 接收 SIGINT 优雅退出;stdout/stderr 各自追加重定向到 log/
