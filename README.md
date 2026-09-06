@@ -3,7 +3,7 @@
 [English](README_ENG.md)
 
 > 一款运行在 **Termux / Linux / macOS / Windows** 上的轻量级 **AI Agent IDE**。
-> 基于 Flask + OpenAI 兼容协议,内置 **plan / act / answer** 三阶段工作流,
+> 基于 Flask + OpenAI 兼容协议（请求通过系统 `curl` 发送）,内置 **plan / act / answer** 三阶段工作流,
 > 让模型在改动你的代码之前,先把方案摆到桌面上等你点头。
 
 ---
@@ -22,6 +22,8 @@
 | **按标签页会话隔离** | `X-CodeForge-Session` 按 sid 隔离 history / 审批 / diff 池,两个标签页各带各的 sid 互不干扰。RLock 保护,单用户默认全部落到 `default` 会话 |
 | **热重载不停服** | 模型清单、系统提示词、全局开关全部支持文件监听热重载,原子写(`os.replace`)+ 自触发抑制,改完不用重启 |
 | **SSE 流式 + 重试退避** | 边想边推,前端实时显示「第 N 轮 / 调用工具 X / 工具返回」。模型请求失败按指数退避重试,确定性异常(权限/路径错误)不重试 |
+| **curl 请求层** | 不依赖 `openai`、`pydantic`、`jiter`;通过系统 `curl` 支持普通请求、SSE 流式输出和 Tool Calling,更适合 Termux |
+| **移动端聊天模式** | 竖屏自动隐藏编辑器、文件树、终端和工作区导航,只保留 AI 对话区域;横屏继续使用完整 IDE 布局 |
 
 ---
 
@@ -33,8 +35,8 @@ codeforge/
 ├── auth.py                 # Host / Origin / token 三道关卡
 ├── sandbox.py              # 路径沙箱与治理文件保护
 ├── ssh.py                  # SSH 会话管理器(asyncssh)
-├── start.sh                # Linux / macOS / Termux 一键启动
-├── start.ps1               # Windows PowerShell 一键启动
+├── restart.sh              # 服务启动 / 停止 / 重启 / 状态控制
+├── deploy_termux.sh        # Termux 环境与依赖部署
 ├── requirements.txt        # 依赖清单(带上界)
 ├── pyproject.toml          # 项目元数据 + pytest 配置
 ├── .config.json            # 全局开关(flow / max_round / workspace_roots)
@@ -67,18 +69,30 @@ codeforge/
 - **Python 3.10+**(开发与测试在 3.11 上进行)
 - 可访问公网,或自建 OpenAI 兼容协议的 API
 
-### Linux / macOS / Termux
+### Linux / macOS
 
 ```bash
 git clone https://github.com/aponia-coola/codeforge.git
 cd codeforge
-./start.sh                       # 默认 127.0.0.1:9191,自动开浏览器
-./start.sh --port 8080           # 自定义端口
-./start.sh --host 0.0.0.0        # 监听所有网卡(会打印风险提示)
-./start.sh --no-browser          # 不自动开浏览器
-./start.sh --rebuild             # 强制重建 .venv
-./start.sh --update              # 强制重装依赖
-./start.sh --dev                 # 开发模式(启用 Flask debug)
+./restart.sh                      # 启动服务
+./restart.sh --port 8080          # 自定义端口
+./restart.sh --host 0.0.0.0       # 监听所有网卡
+./restart.sh status               # 查看状态
+./restart.sh stop                 # 停止服务
+./restart.sh --dev                # 开发模式(启用 Flask debug)
+
+### Termux
+
+不要直接在 `~/storage/shared` 中创建虚拟环境。首次部署执行：
+
+```bash
+cd ~/storage/shared/codeforge
+bash deploy_termux.sh
+cd ~/codeforge
+bash restart.sh --no-browser
+```
+
+`deploy_termux.sh` 会把项目迁移到 Termux 私有目录，安装 Python、curl 及 Termux 可用的原生依赖；之后 `restart.sh` 只负责服务生命周期，不会重复安装依赖。
 ```
 
 ### Windows
@@ -86,18 +100,14 @@ cd codeforge
 ```powershell
 Set-ExecutionPolicy -Scope CurrentUser RemoteSigned    # 首次需要
 
-.\start.ps1
-.\start.ps1 -Port 8080
-.\start.ps1 -ListenHost 0.0.0.0
-.\start.ps1 -Dev
-.\start.ps1 -Console             # 输出留在控制台,不写 log/
+.\restart.ps1
+.\restart.ps1 -Port 8080
+.\restart.ps1 -ListenHost 0.0.0.0
+.\restart.ps1 -Dev
+.\restart.ps1 -Console             # 输出留在控制台,不写 log/
 ```
 
-两个脚本做的事情一样:
-
-1. 探测/创建 `.venv`
-2. 比对 `requirements.txt` 的 sha256 与 `.venv/.deps_installed`,不一致才重装依赖
-3. 检测端口占用,冲突时询问是否继续
+`restart.sh` 只检查 `.venv` 和运行时依赖是否可用,不会在启动时执行 `pip install`。模型请求使用系统 `curl`,因此不需要安装 OpenAI Python SDK。
 4. 生成 `CODEFORGE_TOKEN` 并透传给 `main.py`
 5. 打印带 token 的访问地址,后台拉起浏览器,前台保持 Flask 运行
 6. stdout / stderr 分别重定向到 `log/server.log` 与 `log/server.err.log`
@@ -495,7 +505,7 @@ Agent 的 7 个工具里,`plan` / `list_dir` / `read_file` 是只读的,直接�
 python main.py --port 9191 --debug
 ```
 
-**debug 默认是关的。**`--debug`(或 `CODEFORGE_DEBUG=1`、`start.sh --dev`、`start.ps1 -Dev`)才会打开。
+**debug 默认是关的。**`--debug`(或 `CODEFORGE_DEBUG=1`、`restart.sh --dev`、`restart.ps1 -Dev`)才会打开。
 即使开了 debug,reloader 也始终关闭(`use_reloader=False`)—— 否则 agent 编辑项目内文件会触发重启,
 把会话历史、diff、pending 全部清空,SSE 流当场断掉。
 
@@ -509,4 +519,3 @@ python main.py --port 9191 --debug
 - [ ] 持久化会话(目前 history 仅内存)
 
 ---
-

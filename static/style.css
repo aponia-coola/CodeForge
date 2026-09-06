@@ -3493,6 +3493,94 @@ body.portrait-active .portrait-toggle { background: var(--c-purple); color:#fff;
 .right { border-radius: 0; }
 body.portrait-active .right { border-radius: var(--r-xl) var(--r-xl) 0 0; }
 
+/* ════════════════════════════════════════════════════════════
+   移动端聊天模式
+   竖屏时只保留 AI 对话，编辑器、文件树、终端和工作区导航隐藏。
+   横屏桌面布局不受影响；强制竖屏按钮也复用同一套规则。
+   ════════════════════════════════════════════════════════════ */
+@media (max-width: 768px), (orientation: portrait) {
+  .topbar { display: none !important; }
+  .main {
+    display: block !important;
+    width: 100vw;
+    height: 100dvh !important;
+    min-height: 100dvh;
+    overflow: hidden;
+  }
+  .sidebar-icons,
+  .sidebar,
+  .center,
+  .resize-handle,
+  .terminal,
+  .portrait-backdrop { display: none !important; }
+  .right {
+    display: flex !important;
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100dvh !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    z-index: 40;
+  }
+  .right::before { display: none !important; }
+  .right .ai-panel { width: 100%; min-height: 0; }
+  .ai-header {
+    padding-top: calc(10px + env(safe-area-inset-top));
+    padding-left: calc(14px + env(safe-area-inset-left));
+    padding-right: calc(14px + env(safe-area-inset-right));
+  }
+  .ai-messages {
+    padding: 18px calc(16px + env(safe-area-inset-right)) 18px
+             calc(16px + env(safe-area-inset-left));
+  }
+  .ai-input-wrap {
+    padding-bottom: calc(12px + env(safe-area-inset-bottom));
+    padding-left: calc(12px + env(safe-area-inset-left));
+    padding-right: calc(12px + env(safe-area-inset-right));
+  }
+  .ai-input { height: 52px; font-size: 14px; }
+  .ai-input-footer { margin-top: 6px; }
+  .ai-input-footer span { display: none; }
+  .ai-header .ai-title { font-size: 14px; }
+  .agent-mode, .ai-progress { display: none !important; }
+}
+
+body.portrait-active .topbar { display: none !important; }
+body.portrait-active .main {
+  display: block !important;
+  width: 100vw;
+  height: 100dvh !important;
+  min-height: 100dvh;
+  overflow: hidden;
+}
+body.portrait-active .sidebar-icons,
+body.portrait-active .sidebar,
+body.portrait-active .center,
+body.portrait-active .resize-handle,
+body.portrait-active .terminal,
+body.portrait-active .portrait-backdrop { display: none !important; }
+body.portrait-active .right {
+  display: flex !important;
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100dvh !important;
+  min-height: 0 !important;
+  max-height: none !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  z-index: 40;
+}
+body.portrait-active .right::before { display: none !important; }
+body.portrait-active .right .ai-panel { width: 100%; min-height: 0; }
+body.portrait-active .agent-mode,
+body.portrait-active .ai-progress { display: none !important; }
+
 /* 主题切换保留较圆 */
 .theme-switch { border-radius: 14px; }
 
