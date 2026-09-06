@@ -22,6 +22,7 @@ DO_STOP=0
 DO_RESTART=0
 DO_STATUS=0
 ACTION=""
+ORIGINAL_ARGS=("$@")
 
 PID_FILE="$SCRIPT_DIR/log/server.pid"
 LOG_DIR="$SCRIPT_DIR/log"
@@ -288,6 +289,10 @@ echo "[restart.sh] cwd      = $SCRIPT_DIR"
 # Termux 部署应先通过 deploy_termux.sh 迁移到 ~/codeforge。
 if [[ "$PLATFORM" == "termux" ]] &&
    pwd | grep -E '(/storage/|/sdcard/)' >/dev/null 2>&1; then
+    if [[ -f "$HOME/codeforge/restart.sh" ]]; then
+        echo "[restart.sh] 自动切换到 Termux 私有目录：$HOME/codeforge"
+        exec bash "$HOME/codeforge/restart.sh" "${ORIGINAL_ARGS[@]}"
+    fi
     echo
     echo "[restart.sh] 错误：当前项目位于 Android 共享存储，无法创建 venv"
     echo "[restart.sh] 请先执行："
@@ -948,7 +953,15 @@ echo "$$" > "$PID_FILE"
 
 trap '
     rm -f "$PID_FILE" 2>/dev/null || true
+    if [[ "$PLATFORM" == "termux" ]] && command -v termux-wake-unlock >/dev/null 2>&1; then
+        termux-wake-unlock >/dev/null 2>&1 || true
+    fi
 ' EXIT INT TERM
+
+if [[ "$PLATFORM" == "termux" ]] && command -v termux-wake-lock >/dev/null 2>&1; then
+    termux-wake-lock >/dev/null 2>&1 || true
+    echo "[restart.sh] Termux wake lock = enabled"
+fi
 
 # ============================================================================
 # 启动 CodeForge
