@@ -47,7 +47,17 @@ fi
 command -v pkg >/dev/null 2>&1 || die "找不到 pkg，请确认正在 Termux 中运行"
 log "安装/更新 Termux Python"
 pkg update -y
-pkg install -y python python-cryptography python-cffi python-bcrypt
+pkg install -y python
+
+# 这些是可选的 Termux 原生包，不同镜像/仓库的包名和可用性可能不同。
+# 找不到时不要中断部署，后续由 pip 或已安装的系统包处理。
+for termux_pkg in python-cryptography python-bcrypt; do
+    if pkg install -y "$termux_pkg"; then
+        log "已安装 Termux 原生包：$termux_pkg"
+    else
+        log "跳过不可用的 Termux 包：$termux_pkg"
+    fi
+done
 
 # Termux 的 python 命令名和发行版配置可能不同，优先按需求固定为 python3。
 PY="python3"
