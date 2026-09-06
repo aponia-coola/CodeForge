@@ -199,7 +199,7 @@ find_python() {
             PY=""
         fi
     fi
-    # 再查系统 PATH
+    # 再查系统 PATH - 用 which 定位更可靠
     if [[ -z "$PY" ]]; then
         # Termux 显式路径兜底（最常见位置）
         for p in /data/data/com.termux/files/usr/bin/python3 \
@@ -214,16 +214,20 @@ find_python() {
                 return 0
             fi
         done
-        # 再试 command -v 和常见命令名
-        if [[ "$PLATFORM" == "termux" ]] && command -v python3 >/dev/null 2>&1; then
-            PY="$(command -v python3)"
-            echo "[restart.sh] found python via command -v: $PY" >&2
-            return 0
+        # 再试 which 和常见命令名
+        if [[ "$PLATFORM" == "termux" ]]; then
+            if PY=$(which python3 2>/dev/null); then
+                echo "[restart.sh] found python via which: $PY" >&2
+                return 0
+            fi
+            if PY=$(which python 2>/dev/null); then
+                echo "[restart.sh] found python via which: $PY" >&2
+                return 0
+            fi
         fi
         for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3 python; do
-            if command -v "$c" >/dev/null 2>&1; then
-                PY="$(command -v "$c")"
-                echo "[restart.sh] found python via command -v $c: $PY" >&2
+            if PY=$(which "$c" 2>/dev/null); then
+                echo "[restart.sh] found python via which $c: $PY" >&2
                 return 0
             fi
         done
@@ -326,15 +330,15 @@ if [[ "$WANT_HASH" != "$HAVE_HASH" ]] || [[ $UPDATE_ONLY -eq 1 ]]; then
         # openai 依赖 jiter,而 jiter 需要 Rust 编译;Termux 的 Android 目标三元组
         # (aarch64-unknown-linux-android)不在 rustup 默认支持列表,且仓库 rust 包
         # 可能缺失,即使装了 rustc 也一样会编失败。所以在 Termux 装 openai 时
-        # 一律用 --no-deps 只装 openai 本体,跳过 jiter 等 Rust 依赖(那需要 --no-binary
-        # 强制源码编译,反而更需要 Rust,是反效果),失败不致命,核心 flask/asyncssh/watchdog
-        # 已装好。
+        # 一律用 --no-deps --no-build-isolation 只装 openai 本体,跳过 jiter 等 Rust 依赖,
+        # 失败不致命,核心 flask/asyncssh/watchdog 已装好。
         if [[ "$PLATFORM" == "termux" ]] && grep -qiE "^openai[=<>]" "$REQ_FILE" 2>/dev/null; then
-            echo "[restart.sh] Termux+openai: 用 --no-deps 跳过 jiter(Rust) 依赖,仅装核心 ..."
+            echo "[restart.sh] Termux+openai: 用 --no-deps --no-build-isolation 跳过 jiter(Rust) 依赖,仅装核心 ..."
             # 先把不含 openai 和 cryptography 的核心包装上
             grep -viE "^(openai|cryptography)" "$REQ_FILE" | python -m pip install -r /dev/stdin --quiet || true
-            # openai 单装 --no-deps,失败不致命
-            grep -iE "^openai" "$REQ_FILE" | python -m pip install -r /dev/stdin --no-deps --quiet || \
+            # openai 单装 --no-deps --no-build-isolation,彻底跳过 jiter 编译,失败不致命
+            PIP_NO_BUILD_ISOLATION=0 python -m pip install --no-deps --no-build-isolation \
+                $(grep -iE "^openai" "$REQ_FILE") --quiet || \
                 { echo "[restart.sh] 警告: openai 安装失败(jiter/Rust 被跳过),可后续补;核心功能不受影响。" >&2; }
             # cryptography 使用 --only-binary 避免 rust 编译,失败不致命
             grep -iE "^cryptography" "$REQ_FILE" | python -m pip install -r /dev/stdin --only-binary=cryptography --quiet || \
