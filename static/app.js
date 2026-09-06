@@ -4673,4 +4673,467 @@
   // ── 一切定义完毕后再启动:有令牌就直接拉数据,没有就先要令牌 ──
   if (authToken) bootstrapData();
   else showTokenPrompt('');
-})();
+
+
+  // ============================================================
+  // 模型设置 modal
+  // ============================================================
+  const modelIcon      = document.getElementById('model-icon');
+  const modelMask      = document.getElementById('model-modal-mask');
+  const modelBody      = document.getElementById('model-modal-body');
+  const modelList      = document.getElementById('model-list');
+  const modelListHint  = document.getElementById('model-list-hint');
+  const modelNewBtn    = document.getElementById('model-new-btn');
+  const modelBackBtn   = document.getElementById('model-back-btn');
+  const modelCloseBtn  = document.getElementById('model-modal-close');
+  const modelFormTab   = document.getElementById('model-form-tab');
+  const modelForm      = document.getElementById('model-form');
+  const modelFormTitle = document.getElementById('model-form-title');
+  const modelFormChip  = document.getElementById('model-form-idchip');
+  const modelMsg       = document.getElementById('m-msg');
+  const apikeyStatus   = document.getElementById('m-apikey-status');
+  const apikeyInput    = document.getElementById('m-apikey');
+  const apikeyToggleBtn= document.getElementById('m-apikey-toggle');
+  const apikeyClearBtn = document.getElementById('m-apikey-clear');
+  const testBtn        = document.getElementById('m-test-btn');
+  const deleteBtn      = document.getElementById('m-delete-btn');
+  const setCurrentBtn  = document.getElementById('m-setcurrent-btn');
+
+  const modelState = {
+    list: [],         // 后端 admin 返回的全量列表
+    current: '',      // 当前激活的 model id
+    editing: null,    // 正在编辑的 model id,null=新建
+    apikeyCleared: false,  // 用户是否点过"清除本地 key"(此时保存要发 null)
+    isNew: false,
+  };
+
+  function isPortrait() {
+    return document.body.classList.contains('portrait-active')
+      || window.matchMedia('(max-width: 768px)').matches
+      || window.matchMedia('(orientation: portrait)').matches;
+  }
+
+  function switchModelView(view) {
+    // view = 'list' | 'form'
+    if (modelBody) modelBody.setAttribute('data-view', view);
+    document.querySelectorAll('.model-modal-tabs .model-tab').forEach(t => {
+      t.classList.toggle('active', t.dataset.view === view);
+    });
+  }
+
+  function setModelMsg(text, kind) {
+    if (!modelMsg) return;
+    modelMsg.textContent = text || '';
+    modelMsg.classList.remove('ok', 'err');
+    if (kind) modelMsg.classList.add(kind);
+  }
+
+  function setApikeyStatus(hasKey, source) {
+    if (!apikeyStatus) return;
+    const labels = {
+      env:     '使用环境变量中的 key',
+      local:   '使用本地覆盖层 key(未读取明文)',
+      tracked: '使用 model.json 中的 key(未读取明文)',
+      none:    '未设置 key',
+    };
+    apikeyStatus.textContent = hasKey ? (labels[source] || '已设置 key') : labels.none;
+  }
+
+  function renderModelList() {
+    if (!modelList) return;
+    modelList.innerHTML = '';
+    if (!modelState.list.length) {
+      const empty = document.createElement('div');
+      empty.className = 'model-list-empty';
+      empty.textContent = '暂无模型,点击上方"+ 新增模型"';
+      modelList.appendChild(empty);
+      return;
+    }
+    modelState.list.forEach(entry => {
+      const item = document.createElement('div');
+      item.className = 'model-list-item';
+      item.dataset.id = entry.id;
+      if (entry.id === modelState.editing) item.classList.add('active');
+      if (entry.id === modelState.current) item.classList.add('is-current');
+      const nameRow = document.createElement('div');
+      nameRow.className = 'model-list-name';
+      nameRow.textContent = entry.name || entry.id;
+      const idRow = document.createElement('div');
+      idRow.className = 'model-list-id';
+      idRow.textContent = entry.id;
+      const badges = document.createElement('div');
+      badges.className = 'model-list-badges';
+      const originBadge = document.createElement('span');
+      originBadge.className = 'model-badge ' + (entry.origin === 'local' ? 'origin-local' : 'origin-tracked');
+      originBadge.textContent = entry.origin === 'local' ? '本地' : '基础';
+      badges.appendChild(originBadge);
+      if (entry.vendor) {
+        const v = document.createElement('span');
+        v.className = 'model-badge';
+        v.textContent = entry.vendor;
+        badges.appendChild(v);
+      }
+      const keyBadge = document.createElement('span');
+      keyBadge.className = 'model-badge key-' + (entry.keySource || 'none');
+      const keyText = { env: 'env key', local: '本地 key', tracked: '基础 key', none: '无 key' };
+      keyBadge.textContent = keyText[entry.keySource] || '无 key';
+      badges.appendChild(keyBadge);
+      item.appendChild(nameRow);
+      item.appendChild(idRow);
+      item.appendChild(badges);
+      item.addEventListener('click', () => selectModel(entry.id));
+      modelList.appendChild(item);
+    });
+  }
+
+  function selectModel(id) {
+    const entry = modelState.list.find(m => m.id === id);
+    if (!entry) return;
+    modelState.editing = id;
+    modelState.isNew = false;
+    modelState.apikeyCleared = false;
+    fillForm(entry);
+    renderModelList();
+    if (modelFormTab) modelFormTab.disabled = false;
+    switchModelView('form');
+  }
+
+  function fillForm(entry) {
+    document.getElementById('m-id').value       = entry.id || '';
+    document.getElementById('m-id').disabled    = true;     // id 创建后不可改
+    document.getElementById('m-name').value     = entry.name || '';
+    document.getElementById('m-vendor').value   = entry.vendor || '';
+    document.getElementById('m-url').value      = entry.url || '';
+    document.getElementById('m-apikeyenv').value= '';      // admin 端不回显 env 名(只在 entry.id 已知时再读)
+    document.getElementById('m-timeout').value  = '';
+    document.getElementById('m-apikey').value   = '';
+    document.getElementById('m-maxinput').value = entry.maxInputTokens != null ? entry.maxInputTokens : '';
+    document.getElementById('m-maxoutput').value= entry.maxOutputTokens != null ? entry.maxOutputTokens : '';
+    document.getElementById('m-toolcall').checked = !!entry.supportsToolCall;
+
+    modelFormTitle.textContent = '编辑模型';
+    modelFormChip.textContent  = entry.id;
+    setApikeyStatus(entry.hasKey, entry.keySource);
+    setModelMsg('', null);
+
+    // 单独拉一次该条目的真实 env 名(只读字段)
+    fetchEntryDetail(entry.id);
+
+    // 按钮显示
+    deleteBtn.hidden     = entry.origin !== 'local';   // 只有本地条目可删
+    setCurrentBtn.hidden = entry.id === modelState.current;
+  }
+
+  async function fetchEntryDetail(id) {
+    try {
+      // admin 端已经包含 keySource, 但 apiKeyEnv 没有专门字段,我们用 models(request.py) 的实现回显
+      // 这里直接从 /api/models 公开端拉一遍, 找到对应条目
+      const r = await api('/api/models');
+      const data = await r.json();
+      const found = (data.models || []).find(m => m.id === id);
+      // /api/models 公开端不返回 env/url,所以这里先置为空
+      // 真正需要 env 名需要后端再返回,目前用 admin 端的 url 已经满足, env 名让用户自己填或留空
+    } catch (e) { /* 静默,不影响主流程 */ }
+  }
+
+  function newModelForm() {
+    modelState.editing = null;
+    modelState.isNew = true;
+    modelState.apikeyCleared = false;
+    document.getElementById('m-id').value       = '';
+    document.getElementById('m-id').disabled    = false;
+    document.getElementById('m-name').value     = '';
+    document.getElementById('m-vendor').value   = '';
+    document.getElementById('m-url').value      = '';
+    document.getElementById('m-apikeyenv').value= '';
+    document.getElementById('m-timeout').value  = '';
+    document.getElementById('m-apikey').value   = '';
+    document.getElementById('m-maxinput').value = '';
+    document.getElementById('m-maxoutput').value= '';
+    document.getElementById('m-toolcall').checked = true;
+    modelFormTitle.textContent = '新增模型';
+    modelFormChip.textContent  = '';
+    setApikeyStatus(false, 'none');
+    setModelMsg('', null);
+    deleteBtn.hidden     = true;
+    setCurrentBtn.hidden = true;
+    if (modelFormTab) modelFormTab.disabled = false;
+    switchModelView('form');
+    renderModelList();
+    setTimeout(() => document.getElementById('m-id').focus(), 50);
+  }
+
+  async function loadModelList() {
+    try {
+      const r = await api('/api/models/admin');
+      const data = await r.json();
+      if (!data.ok) throw new Error(data.error || '加载失败');
+      modelState.list = data.models || [];
+      const cur = await api('/api/models');
+      const curData = await cur.json();
+      modelState.current = (curData && curData.current) || '';
+      const total = modelState.list.length;
+      const curName = modelState.current || '-';
+      const trackedOnly = modelState.list.every(m => m.origin === 'tracked');
+      let extra = '';
+      if (total > 0 && trackedOnly) {
+        extra = ' · 尚未建本地覆盖层(首次新增模型时会自动创建 model.local.json)';
+      }
+      modelListHint.textContent = '共 ' + total + ' 个 · 当前: ' + curName + extra;
+      renderModelList();
+    } catch (e) {
+      modelListHint.textContent = '加载失败: ' + (e.message || e);
+    }
+  }
+
+  function buildSpecFromForm() {
+    const id = document.getElementById('m-id').value.trim();
+    const spec = { id };
+    const v = name => {
+      const el = document.getElementById(name);
+      return el && el.value !== '' ? el.value : undefined;
+    };
+    if (modelState.isNew) {
+      // 新建:id/name/url 都是必填(后端会再校验)
+      spec.name = document.getElementById('m-name').value.trim();
+    } else {
+      const nameVal = document.getElementById('m-name').value.trim();
+      if (nameVal) spec.name = nameVal;
+    }
+    const vendor = document.getElementById('m-vendor').value.trim();
+    if (vendor) spec.vendor = vendor;
+    const url = document.getElementById('m-url').value.trim();
+    if (url) spec.url = url;
+    const env = document.getElementById('m-apikeyenv').value.trim();
+    if (env) spec.apiKeyEnv = env;
+    const timeout = document.getElementById('m-timeout').value.trim();
+    if (timeout) {
+      const n = parseInt(timeout, 10);
+      if (!isNaN(n) && n > 0) spec.timeout = n;
+    }
+    const apikeyVal = apikeyInput.value;
+    if (modelState.apikeyCleared) {
+      spec.apiKey = null;                  // 显式 null = 清本地 key
+    } else if (apikeyVal && apikeyVal.length > 0) {
+      spec.apiKey = apikeyVal;             // 非空 = 覆盖
+    }
+    // 留空 / undefined = 不动
+    const maxIn = document.getElementById('m-maxinput').value.trim();
+    if (maxIn) spec.maxInputTokens = parseInt(maxIn, 10);
+    const maxOut = document.getElementById('m-maxoutput').value.trim();
+    if (maxOut) spec.maxOutputTokens = parseInt(maxOut, 10);
+    spec.supportsToolCall = document.getElementById('m-toolcall').checked;
+    return spec;
+  }
+
+  async function saveModel(e) {
+    e.preventDefault();
+    const spec = buildSpecFromForm();
+    if (!spec.id) {
+      setModelMsg('请填写 ID', 'err');
+      document.getElementById('m-id').focus();
+      return;
+    }
+    if (modelState.isNew && !spec.name) {
+      setModelMsg('请填写显示名称', 'err');
+      document.getElementById('m-name').focus();
+      return;
+    }
+    if (modelState.isNew && !spec.url) {
+      setModelMsg('请填写 API URL', 'err');
+      document.getElementById('m-url').focus();
+      return;
+    }
+    setModelMsg('保存中...', null);
+    const saveBtn = document.getElementById('m-save-btn');
+    saveBtn.disabled = true;
+    try {
+      const r = await api('/api/models/upsert', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(spec),
+      });
+      const data = await r.json();
+      if (!data.ok) {
+        setModelMsg('保存失败: ' + (data.error || '未知错误'), 'err');
+        return;
+      }
+      // 判断是否是首次建本地层
+      const wasEmpty = modelState.list.length === 0;
+      setModelMsg(wasEmpty ? '已保存,本地覆盖层已自动初始化' : '已保存', 'ok');
+      modelState.isNew = false;
+      modelState.editing = spec.id;
+      modelState.apikeyCleared = false;
+      await loadModelList();
+      // 重新选中自己
+      selectModel(spec.id);
+      // 通知主页面刷新下拉(如果有 loadModels 全局)
+      try { if (typeof loadModels === 'function') loadModels(); } catch (_) {}
+    } catch (err) {
+      setModelMsg('保存失败: ' + (err.message || err), 'err');
+    } finally {
+      saveBtn.disabled = false;
+    }
+  }
+
+  async function deleteCurrentModel() {
+    if (!modelState.editing) return;
+    const id = modelState.editing;
+    if (!confirm('确定要删除模型 "' + id + '" 吗?\n此操作仅删除本地覆盖层,model.json 中的基础条目不受影响。')) {
+      return;
+    }
+    deleteBtn.disabled = true;
+    setModelMsg('删除中...', null);
+    try {
+      const r = await api('/api/models/delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+      const data = await r.json();
+      if (!data.ok) {
+        setModelMsg('删除失败: ' + (data.error || '未知错误'), 'err');
+        return;
+      }
+      setModelMsg('已删除', 'ok');
+      modelState.editing = null;
+      modelState.isNew = false;
+      await loadModelList();
+      switchModelView('list');
+    } catch (err) {
+      setModelMsg('删除失败: ' + (err.message || err), 'err');
+    } finally {
+      deleteBtn.disabled = false;
+    }
+  }
+
+  async function testCurrentModel() {
+    if (!modelState.editing) {
+      setModelMsg('请先保存模型再测试', 'err');
+      return;
+    }
+    testBtn.disabled = true;
+    setModelMsg('测试中,最多 15 秒...', null);
+    try {
+      const r = await api('/api/models/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: modelState.editing }),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        setModelMsg('连接成功,延迟 ' + (data.latency_ms != null ? data.latency_ms + ' ms' : '-'), 'ok');
+      } else {
+        setModelMsg('连接失败: ' + (data.error || '未知错误'), 'err');
+      }
+    } catch (err) {
+      setModelMsg('测试失败: ' + (err.message || err), 'err');
+    } finally {
+      testBtn.disabled = false;
+    }
+  }
+
+  async function setAsCurrent() {
+    if (!modelState.editing) return;
+    setCurrentBtn.disabled = true;
+    setModelMsg('切换中...', null);
+    try {
+      const r = await api('/api/model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: modelState.editing }),
+      });
+      const data = await r.json();
+      if (!data.ok) {
+        setModelMsg('切换失败: ' + (data.error || '未知错误'), 'err');
+        return;
+      }
+      modelState.current = modelState.editing;
+      setModelMsg('已设为当前模型', 'ok');
+      try { if (typeof loadModels === 'function') loadModels(); } catch (_) {}
+      await loadModelList();
+      // 重新进入编辑(刷新按钮显隐)
+      const entry = modelState.list.find(m => m.id === modelState.editing);
+      if (entry) fillForm(entry);
+    } catch (err) {
+      setModelMsg('切换失败: ' + (err.message || err), 'err');
+    } finally {
+      setCurrentBtn.disabled = false;
+    }
+  }
+
+  function openModelModal() {
+    if (!modelMask) return;
+    modelMask.style.display = '';
+    switchModelView('list');
+    setModelMsg('', null);
+    loadModelList();
+  }
+
+  function closeModelModal() {
+    if (!modelMask) return;
+    modelMask.style.display = 'none';
+  }
+
+  // 事件绑定
+  if (modelIcon) {
+    modelIcon.addEventListener('click', openModelModal);
+  }
+  if (modelCloseBtn) {
+    modelCloseBtn.addEventListener('click', closeModelModal);
+  }
+  if (modelMask) {
+    modelMask.addEventListener('click', (e) => {
+      if (e.target === modelMask) closeModelModal();
+    });
+  }
+  if (modelNewBtn) {
+    modelNewBtn.addEventListener('click', newModelForm);
+  }
+  if (modelBackBtn) {
+    modelBackBtn.addEventListener('click', () => switchModelView('list'));
+  }
+  document.querySelectorAll('.model-modal-tabs .model-tab').forEach(btn => {
+    btn.addEventListener('click', () => switchModelView(btn.dataset.view));
+  });
+  if (apikeyToggleBtn) {
+    apikeyToggleBtn.addEventListener('click', () => {
+      const isPwd = apikeyInput.type === 'password';
+      apikeyInput.type = isPwd ? 'text' : 'password';
+      apikeyToggleBtn.textContent = isPwd ? '隐藏' : '显示';
+    });
+  }
+  if (apikeyClearBtn) {
+    apikeyClearBtn.addEventListener('click', () => {
+      apikeyInput.value = '';
+      apikeyInput.disabled = true;
+      modelState.apikeyCleared = true;
+      setApikeyStatus(false, 'none');
+      setModelMsg('已标记清除本地 key,保存后生效', null);
+    });
+  }
+  if (apikeyInput) {
+    apikeyInput.addEventListener('input', () => {
+      if (modelState.apikeyCleared) {
+        modelState.apikeyCleared = false;
+        apikeyInput.disabled = false;
+        setModelMsg('', null);
+      }
+    });
+  }
+  if (modelForm) {
+    modelForm.addEventListener('submit', saveModel);
+  }
+  if (testBtn)       testBtn.addEventListener('click', testCurrentModel);
+  if (deleteBtn)     deleteBtn.addEventListener('click', deleteCurrentModel);
+  if (setCurrentBtn) setCurrentBtn.addEventListener('click', setAsCurrent);
+  document.getElementById('m-cancel-btn').addEventListener('click', () => switchModelView('list'));
+
+  // Esc 关闭
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && modelMask && modelMask.style.display !== 'none') {
+      closeModelModal();
+    }
+  });
+
+  })();

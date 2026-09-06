@@ -8,7 +8,7 @@ __pycache__/
 .codex/
 AGENTS.md
 # 本地模型覆盖层:真实 key 只放这里,永不进仓库
-models/model.local.json
+models/*.local.*
 
 # 日志统一到 log/ 目录,根目录的旧文件也忽略
 log/*.log

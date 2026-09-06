@@ -101,6 +101,13 @@
       </svg>
     </div>
 
+    <div id="model-icon" title="模型设置">
+      <svg viewBox="0 0 16 16" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="8" cy="8" r="2.2"/>
+        <path d="M8 1.4v2.2M8 12.4v2.2M1.4 8h2.2M12.4 8h2.2M3.2 3.2l1.6 1.6M11.2 11.2l1.6 1.6M3.2 12.8l1.6-1.6M11.2 4.8l1.6-1.6"/>
+      </svg>
+    </div>
+
   </div>
 
   <!-- 左侧文件树 -->
@@ -387,6 +394,110 @@
            spellcheck="false" autocomplete="off">
     <div class="quickopen-meta" id="quickopen-meta"></div>
     <div class="quickopen-list" id="quickopen-list"></div>
+  </div>
+</div>
+
+<!-- 模型设置 modal -->
+<div class="modal-mask model-modal-mask" id="model-modal-mask" style="display:none;">
+  <div class="modal-box model-modal-box">
+    <div class="model-modal-header">
+      <span class="modal-title" style="margin:0;">模型设置</span>
+      <span class="model-modal-tabs">
+        <button class="model-tab active" data-view="list" type="button">列表</button>
+        <button class="model-tab" data-view="form" type="button" id="model-form-tab" disabled>编辑</button>
+      </span>
+      <button class="modal-close" id="model-modal-close" type="button" title="关闭" aria-label="关闭">×</button>
+    </div>
+
+    <div class="model-modal-body" id="model-modal-body">
+      <div class="model-pane model-pane-list" id="model-pane-list">
+        <div class="model-list-toolbar">
+          <button class="model-btn primary" id="model-new-btn" type="button">+ 新增模型</button>
+          <span class="model-list-hint" id="model-list-hint"></span>
+        </div>
+        <div class="model-list" id="model-list" role="list"></div>
+      </div>
+
+      <div class="model-pane model-pane-form" id="model-pane-form">
+        <div class="model-form-header">
+          <button class="model-back-btn" id="model-back-btn" type="button" title="返回列表">← 返回</button>
+          <span id="model-form-title">新建模型</span>
+          <span class="model-form-idchip" id="model-form-idchip"></span>
+        </div>
+        <form class="model-form" id="model-form" autocomplete="off" novalidate>
+          <label class="model-field">
+            <span class="model-field-label">ID <em>*</em></span>
+            <input type="text" id="m-id" maxlength="128" required spellcheck="false">
+            <small class="model-form-hint">用作 model.json 中的对应键,创建后不可修改</small>
+          </label>
+
+          <div class="model-form-row">
+            <label class="model-field">
+              <span class="model-field-label">显示名称</span>
+              <input type="text" id="m-name" maxlength="128">
+            </label>
+            <label class="model-field">
+              <span class="model-field-label">厂商</span>
+              <input type="text" id="m-vendor" maxlength="128" placeholder="例如: openai / deepseek / anthropic">
+            </label>
+          </div>
+
+          <label class="model-field">
+            <span class="model-field-label">API URL</span>
+            <input type="url" id="m-url" maxlength="512" placeholder="https://api.example.com/v1" spellcheck="false">
+            <small class="model-form-hint">OpenAI 兼容格式,以 /v1 结尾,不必写 /chat/completions</small>
+          </label>
+
+          <div class="model-form-row">
+            <label class="model-field">
+              <span class="model-field-label">环境变量名 (apiKeyEnv)</span>
+              <input type="text" id="m-apikeyenv" maxlength="128" placeholder="例如: CODEFORGE_DEEPSEEK_KEY" spellcheck="false">
+            </label>
+            <label class="model-field">
+              <span class="model-field-label">超时 (timeout, 秒)</span>
+              <input type="number" id="m-timeout" min="1" max="3600" placeholder="默认 120">
+            </label>
+          </div>
+
+          <label class="model-field">
+            <span class="model-field-label">API Key</span>
+            <div class="model-key-row">
+              <input type="password" id="m-apikey" maxlength="4096" placeholder="留空保留原值;非空=覆盖;Clear 按钮=清本地 key" spellcheck="false" autocomplete="new-password">
+              <button type="button" class="model-btn small" id="m-apikey-toggle" title="显示/隐藏">显示</button>
+              <button type="button" class="model-btn small danger" id="m-apikey-clear" title="清除本地 key">清除</button>
+            </div>
+            <small class="model-form-hint" id="m-apikey-status">未设置 key</small>
+          </label>
+
+          <div class="model-form-row">
+            <label class="model-field">
+              <span class="model-field-label">输入上限 (tokens)</span>
+              <input type="number" id="m-maxinput" min="1" max="20000000" placeholder="例如: 128000">
+            </label>
+            <label class="model-field">
+              <span class="model-field-label">输出上限 (tokens)</span>
+              <input type="number" id="m-maxoutput" min="1" max="1000000" placeholder="例如: 8192">
+            </label>
+          </div>
+
+          <label class="model-form-checkbox">
+            <input type="checkbox" id="m-toolcall" checked>
+            <span>支持工具调用 (Tool Calling)</span>
+          </label>
+
+          <div class="model-form-msg" id="m-msg" role="status" aria-live="polite"></div>
+
+          <div class="model-form-actions">
+            <button type="button" class="model-btn" id="m-test-btn">测试连接</button>
+            <button type="button" class="model-btn" id="m-setcurrent-btn" hidden>设为当前</button>
+            <button type="button" class="model-btn danger" id="m-delete-btn" hidden>删除</button>
+            <span class="model-form-spacer"></span>
+            <button type="button" class="model-btn" id="m-cancel-btn">取消</button>
+            <button type="submit" class="model-btn primary" id="m-save-btn">保存</button>
+          </div>
+        </form>
+      </div>
+    </div>
   </div>
 </div>
 

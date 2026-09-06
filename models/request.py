@@ -535,6 +535,25 @@ def _save_local(doc: dict) -> None:
     _suppress_watch()
 
 
+def _bootstrap_local_doc(doc: dict) -> None:
+    """
+    首次创建本地层文件时补齐骨架。
+    只在当前 doc 缺少对应字段时才补充,
+    不覆盖现有用户设置。这样首次点击
+    "新增模型"保存后会生成结构完整的本地文件,
+    后续再调用不会重新覆盖。
+    """
+    if "current_model" not in doc:
+        first = next(
+            (m.get("id") for m in doc.get("models", []) if isinstance(m, dict) and m.get("id")),
+            None,
+        )
+        doc["current_model"] = first
+    if "availableModels" not in doc:
+        ids = [m.get("id") for m in doc.get("models", []) if isinstance(m, dict) and m.get("id")]
+        doc["availableModels"] = ids
+
+
 def _commit_local(doc: dict) -> None:
     """
     写本地覆盖层并就地重装配置(锁内调用)。
@@ -779,6 +798,7 @@ def upsert_model(spec: dict) -> dict:
                     return {"ok": False, "error": "缺少 url"}
             doc["models"] = models
             _keep_visible(doc, model_id)
+            _bootstrap_local_doc(doc)
             _commit_local(doc)
         except Exception as e:
             return {"ok": False, "error": f"{type(e).__name__}: {e}"}
