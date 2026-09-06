@@ -199,35 +199,25 @@ find_python() {
             PY=""
         fi
     fi
-    # 再查系统 PATH - 用 which 定位更可靠
+    # 再查系统 PATH - 直接用 command -v 最标准可靠
     if [[ -z "$PY" ]]; then
-        # Termux 显式路径兜底（最常见位置）
+        # 直接用 command -v 最标准，Termux 下 python3/python 都试
+        for c in python3 python; do
+            if PY=$(command -v "$c" 2>/dev/null); then
+                if "$PY" --version >/dev/null 2>&1; then
+                    echo "[restart.sh] found python: $PY" >&2
+                    return 0
+                fi
+            fi
+        done
+        # 显式路径兜底（Termux 常见位置）
         for p in /data/data/com.termux/files/usr/bin/python3 \
                  /data/data/com.termux/files/usr/bin/python \
                  /system/bin/python3 \
-                 /system/bin/python \
-                 /usr/bin/python3 \
-                 /usr/bin/python; do
-            if [[ -x "$p" ]]; then
+                 /usr/bin/python3; do
+            if [[ -x "$p" ]] && "$p" --version >/dev/null 2>&1; then
                 PY="$p"
                 echo "[restart.sh] found python at: $PY" >&2
-                return 0
-            fi
-        done
-        # 再试 which 和常见命令名
-        if [[ "$PLATFORM" == "termux" ]]; then
-            if PY=$(which python3 2>/dev/null); then
-                echo "[restart.sh] found python via which: $PY" >&2
-                return 0
-            fi
-            if PY=$(which python 2>/dev/null); then
-                echo "[restart.sh] found python via which: $PY" >&2
-                return 0
-            fi
-        fi
-        for c in python3.12 python3.11 python3.10 python3.9 python3.8 python3 python; do
-            if PY=$(which "$c" 2>/dev/null); then
-                echo "[restart.sh] found python via which $c: $PY" >&2
                 return 0
             fi
         done
