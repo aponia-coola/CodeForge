@@ -22,7 +22,16 @@ if pwd | grep -E '(/storage/|/sdcard/)' >/dev/null 2>&1; then
     log "检测到共享存储：$SCRIPT_DIR"
     log "迁移项目到：$DEST"
     mkdir -p "$DEST"
-    cp -r "$SCRIPT_DIR"/. "$DEST"/ || die "项目迁移失败，请检查存储权限"
+    # .git 不参与运行，且其中的对象权限经常导致跨存储复制失败。
+    # .venv 也不跨目录复用，避免带入共享存储上的符号链接。
+    shopt -s dotglob nullglob
+    for item in "$SCRIPT_DIR"/*; do
+        name="$(basename "$item")"
+        case "$name" in
+            .git|.venv) continue ;;
+        esac
+        cp -r "$item" "$DEST/" || die "项目迁移失败：$name，请检查存储权限"
+    done
     cd "$DEST"
     exec bash "$DEST/deploy_termux.sh" "$@"
 fi
