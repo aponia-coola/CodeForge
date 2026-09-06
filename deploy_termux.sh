@@ -47,7 +47,7 @@ fi
 command -v pkg >/dev/null 2>&1 || die "找不到 pkg，请确认正在 Termux 中运行"
 log "安装/更新 Termux Python"
 pkg update -y
-pkg install -y python
+pkg install -y python curl
 
 # 这些是可选的 Termux 原生包，不同镜像/仓库的包名和可用性可能不同。
 # 找不到时不要中断部署，后续由 pip 或已安装的系统包处理。
