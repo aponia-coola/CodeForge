@@ -51,7 +51,7 @@ pkg install -y python
 
 # 这些是可选的 Termux 原生包，不同镜像/仓库的包名和可用性可能不同。
 # 找不到时不要中断部署，后续由 pip 或已安装的系统包处理。
-for termux_pkg in python-cryptography python-bcrypt python-pydantic; do
+for termux_pkg in python-cryptography python-bcrypt; do
     if pkg install -y "$termux_pkg"; then
         log "已安装 Termux 原生包：$termux_pkg"
     else
@@ -94,25 +94,14 @@ fi
 REQ_FILE="$SCRIPT_DIR/requirements.txt"
 [[ -f "$REQ_FILE" ]] || die "找不到 requirements.txt"
 
-if grep -Eiq '(^|[[:space:]])openai([<>=!~[:space:]]|$)' "$REQ_FILE"; then
-    if command -v rustc >/dev/null 2>&1; then
-        log "检测到 openai 和 Rust，使用 --no-binary jiter 安装依赖"
-        "$VENV_PY" -m pip install --no-binary jiter -r "$REQ_FILE"
-    else
-        log "未检测到 Rust，跳过 jiter，安装核心依赖"
-        FILTERED_REQ="$(mktemp)"
-        # asyncssh/openai 的依赖解析会把 cryptography 拉回源码编译；
-        # cryptography/bcrypt/pydantic 优先使用 Termux 原生包，避免 Android
-        # 环境触发 Rust 源码编译；OpenAI 的其余纯 Python 依赖仍需安装。
-        grep -Eiv '^[[:space:]]*(openai|asyncssh)([<>=!~[:space:]]|$)' "$REQ_FILE" > "$FILTERED_REQ"
-        "$VENV_PY" -m pip install -r "$FILTERED_REQ"
-        "$VENV_PY" -m pip install --no-deps 'asyncssh>=2.13,<3'
-        "$VENV_PY" -m pip install \
-            'anyio<5' 'distro<2' 'httpx<1' 'sniffio' 'tqdm' 'typing-extensions'
-        "$VENV_PY" -m pip install --no-deps 'openai>=1.0,<3'
-    fi
-else
+if command -v rustc >/dev/null 2>&1; then
     "$VENV_PY" -m pip install -r "$REQ_FILE"
+else
+    log "未检测到 Rust，复用 Termux 原生 cryptography/bcrypt，跳过 asyncssh 的依赖编译"
+    FILTERED_REQ="$(mktemp)"
+    grep -Eiv '^[[:space:]]*asyncssh([<>=!~[:space:]]|$)' "$REQ_FILE" > "$FILTERED_REQ"
+    "$VENV_PY" -m pip install -r "$FILTERED_REQ"
+    "$VENV_PY" -m pip install --no-deps 'asyncssh>=2.13,<3'
 fi
 
 log "Termux 部署完成：$SCRIPT_DIR"

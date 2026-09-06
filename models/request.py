@@ -19,12 +19,183 @@ import json
 import os
 import random
 import re
+import shutil
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import SimpleNamespace
 
-from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
+
+class APIConnectionError(Exception):
+    """curl 无法建立或维持连接。"""
+
+
+class APITimeoutError(APIConnectionError):
+    """curl 请求超时。"""
+
+
+class APIStatusError(Exception):
+    """HTTP 状态码表示的 API 错误。"""
+    def __init__(self, message: str, status_code: int, headers: dict | None = None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.response = SimpleNamespace(
+            status_code=status_code,
+            headers=headers or {},
+        )
+
+
+def _namespace(value):
+    """把 JSON 字典转换成与 SDK 对象兼容的属性访问对象。"""
+    if isinstance(value, dict):
+        return SimpleNamespace(**{k: _namespace(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return [_namespace(v) for v in value]
+    return value
+
+
+def _curl_chunk(payload: dict):
+    """构造流式 chunk 的最小兼容对象。"""
+    return _namespace(payload)
+
+
+class _CurlCompletions:
+    def __init__(self, client):
+        self._client = client
+
+    def create(self, **kwargs):
+        return self._client.create(**kwargs)
+
+
+class _CurlChat:
+    def __init__(self, client):
+        self.completions = _CurlCompletions(client)
+
+
+class CurlClient:
+    """使用系统 curl 调用 OpenAI 兼容 chat/completions 接口。"""
+    def __init__(self, api_key: str, base_url: str, timeout: float):
+        if not shutil.which("curl"):
+            raise RuntimeError("找不到 curl，请先安装 curl")
+        self.api_key = api_key
+        self.base_url = (base_url or "https://api.openai.com/v1").rstrip("/")
+        self.timeout = timeout
+        self.chat = _CurlChat(self)
+
+    @property
+    def endpoint(self) -> str:
+        return self.base_url + "/chat/completions"
+
+    def _command(self, timeout: float, stream: bool) -> list[str]:
+        command = [
+            "curl", "--silent", "--show-error", "--location",
+            "--request", "POST", "--no-buffer",
+            "--connect-timeout", str(max(1, int(timeout))),
+            "--max-time", str(max(1, int(timeout))),
+            "--header", "Content-Type: application/json",
+            "--header", f"Authorization: Bearer {self.api_key}",
+            "--write-out", "\\n__CODEFORGE_HTTP_STATUS__:%{http_code}\\n",
+            "--data-binary", "@-",
+            self.endpoint,
+        ]
+        return command
+
+    @staticmethod
+    def _split_status(output: str) -> tuple[str, int]:
+        marker = "__CODEFORGE_HTTP_STATUS__:"
+        pos = output.rfind(marker)
+        if pos < 0:
+            raise APIConnectionError("curl 未返回 HTTP 状态码")
+        body = output[:pos].rstrip("\r\n")
+        status_text = output[pos + len(marker):].strip().splitlines()[0]
+        try:
+            return body, int(status_text)
+        except ValueError as exc:
+            raise APIConnectionError(f"curl 返回了无效状态码：{status_text}") from exc
+
+    @staticmethod
+    def _raise_status(status: int, body: str):
+        if status == 0:
+            raise APIConnectionError(body or "curl 无法连接到 API")
+        if status >= 400:
+            detail = body[:1000] or f"HTTP {status}"
+            raise APIStatusError(detail, status)
+
+    def create(self, **kwargs):
+        timeout = float(kwargs.pop("timeout", self.timeout) or self.timeout)
+        stream = bool(kwargs.get("stream"))
+        extra_body = kwargs.pop("extra_body", None) or {}
+        payload = {**kwargs, **extra_body}
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        command = self._command(timeout, stream)
+
+        if not stream:
+            try:
+                result = subprocess.run(
+                    command, input=body, text=True, capture_output=True,
+                    timeout=timeout + 5,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise APITimeoutError("curl 请求超时") from exc
+            except OSError as exc:
+                raise APIConnectionError(str(exc)) from exc
+            if result.returncode != 0 and not result.stdout:
+                raise APIConnectionError(result.stderr.strip() or "curl 请求失败")
+            raw, status = self._split_status(result.stdout)
+            self._raise_status(status, raw)
+            try:
+                return _namespace(json.loads(raw))
+            except json.JSONDecodeError as exc:
+                raise APIConnectionError(f"API 返回非 JSON：{raw[:500]}") from exc
+
+        return self._stream(command, body, timeout)
+
+    def _stream(self, command: list[str], body: str, timeout: float):
+        try:
+            process = subprocess.Popen(
+                command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, bufsize=1,
+            )
+        except OSError as exc:
+            raise APIConnectionError(str(exc)) from exc
+
+        try:
+            process.stdin.write(body)
+            process.stdin.close()
+            status = None
+            marker = "__CODEFORGE_HTTP_STATUS__:"
+            for line in process.stdout:
+                if marker in line:
+                    try:
+                        status = int(line.split(marker, 1)[1].strip())
+                    except ValueError:
+                        pass
+                    continue
+                line = line.strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    continue
+                try:
+                    yield _curl_chunk(json.loads(data))
+                except json.JSONDecodeError:
+                    continue
+            stderr = process.stderr.read().strip()
+            return_code = process.wait()
+        except BrokenPipeError as exc:
+            process.kill()
+            raise APIConnectionError("curl 请求管道中断") from exc
+        finally:
+            if process.poll() is None:
+                process.kill()
+
+        if status is not None and status >= 400:
+            raise APIStatusError(stderr or f"HTTP {status}", status)
+        if return_code != 0:
+            raise APIConnectionError(stderr or "curl 流式请求失败")
 
 _CONFIG_PATH = Path(__file__).resolve().parent / "model.json"
 _LOCAL_FILENAME = "model.local.json"
@@ -348,7 +519,7 @@ class ModelSnapshot:
     timeout: float
     max_retries: int
     api_key: str = field(repr=False)
-    client: OpenAI = field(repr=False)
+    client: CurlClient = field(repr=False)
 
 
 _STATE_LOCK = threading.RLock()
@@ -360,7 +531,7 @@ _MODELS: list[dict] = []
 _CURRENT_MODEL: str = ""
 _BASE_URL: str = ""
 _API_KEY: str = ""
-_client: OpenAI | None = None
+_client: CurlClient | None = None
 _SNAPSHOT: ModelSnapshot | None = None
 _LAST_RAW: str = ""
 _LOCAL_RAW: str = ""
@@ -370,19 +541,12 @@ _TRACKED_IDS: frozenset = frozenset()
 _SUPPRESS_UNTIL: float = 0.0
 
 
-def _build_client(api_key: str, base_url: str, timeout: float) -> OpenAI:
+def _build_client(api_key: str, base_url: str, timeout: float) -> CurlClient:
     """
-    构造 OpenAI client。
-    max_retries=0:重试策略由本模块的退避逻辑统一负责,避免和 SDK 内置重试相乘。
-    key 为空时塞占位串:SDK 拿到空串会直接抛,那会让"key 只放环境变量而变量没设"
-    的条目在导入期就炸掉整个模型层;塞占位串则退化成请求时的 401,可诊断得多。
+    构造 curl client。重试策略由本模块统一负责。
+    key 为空时塞占位串,让错误发生在请求阶段并保留可诊断的 401。
     """
-    return OpenAI(
-        api_key=api_key or _MISSING_KEY,
-        base_url=base_url or None,
-        timeout=timeout,
-        max_retries=0,
-    )
+    return CurlClient(api_key or _MISSING_KEY, base_url, timeout)
 
 
 def _install_current(model_id: str | None) -> None:

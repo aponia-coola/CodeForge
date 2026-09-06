@@ -174,7 +174,7 @@ if [[ ! -x "$VENV_PY" ]]; then
     exit 1
 fi
 
-if ! "$VENV_PY" -c 'import flask, openai' >/dev/null 2>"$SCRIPT_DIR/.runtime_check_err"; then
+if ! "$VENV_PY" -c 'import flask' >/dev/null 2>"$SCRIPT_DIR/.runtime_check_err"; then
     echo "[restart.sh] Python 运行依赖不完整，拒绝启动。" >&2
     cat "$SCRIPT_DIR/.runtime_check_err" >&2
     echo "[restart.sh] 请先运行 deploy_termux.sh 或补齐 requirements.txt 依赖。" >&2
