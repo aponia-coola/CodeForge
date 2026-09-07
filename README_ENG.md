@@ -501,4 +501,4 @@ There is one platform difference: `start.sh` appends (`>>`); Windows redirection
 
 ## License
 
-[MIT](LICENSE). The copyright line in `LICENSE` is currently a placeholder `<YOUR NAME>`; please replace it with your own attribution.
+[GNU General Public License v3.0](LICENSE).

@@ -519,3 +519,7 @@ python main.py --port 9191 --debug
 - [ ] 持久化会话(目前 history 仅内存)
 
 ---
+
+## 许可证
+
+本项目采用 [GNU General Public License v3.0](LICENSE) 授权。
