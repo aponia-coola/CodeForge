@@ -1,5 +1,7 @@
 # CodeForge
 
+!!!!!!!!!!!!!!!!!!此版本已经不再维护，请新访问者访问重构后的codeforgr-go!!!!!!!!!!!!!!!!!!!!!!!!
+
 [English](README_ENG.md)
 
 > 一款运行在 **Termux / Linux / macOS / Windows** 上的轻量级 **AI Agent IDE**。
